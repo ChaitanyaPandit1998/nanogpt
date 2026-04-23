@@ -1,0 +1,7 @@
+torch>=2.1.0
+numpy>=1.26.0
+datasets>=2.18.0
+tqdm>=4.66.0
+rustbpe
+tiktoken>=0.6.0
+tokenizers>=0.19.0

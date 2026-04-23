@@ -1,0 +1,22 @@
+# Virtual environment
+venv/
+
+# Pretraining data shards (~20 GB)
+edu_fineweb10B/
+
+# Training checkpoints
+log/
+sft_checkpoints/
+rl_checkpoints/
+
+# SFT data exports
+chat_train.jsonl
+chat_val.jsonl
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+
+# macOS
+.DS_Store

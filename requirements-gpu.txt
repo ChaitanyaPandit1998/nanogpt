@@ -1,0 +1,4 @@
+# Flash Attention 3 — H100 / Hopper GPUs only.
+# Requires CUDA toolkit and takes ~10 min to compile.
+# Skip on A100 or CPU setups — torch SDPA is used as fallback automatically.
+flash-attn>=2.5.0

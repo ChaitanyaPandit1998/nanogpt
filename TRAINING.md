@@ -87,12 +87,22 @@ These two files (~few MB total) are the only output needed on RunPod. All larger
 ```bash
 cd /workspace
 git clone <your-repo>
-cd blk-gpt
-pip install torch numpy datasets tqdm rustbpe tokenizers tiktoken
-pip install flash-attn   # H100 only — skip on A100
 ```
 
-4. **Redirect HuggingFace cache to `/workspace`** — critical. By default HuggingFace downloads to `/root/.cache/` on the local pod disk which has very little space and will crash mid-download. Run this once after SSH:
+4. **Set up the persistent venv** — packages live on `/workspace` and survive pod restarts. You only need to do this once:
+
+```bash
+bash /workspace/nanogpt/runpod_start.sh
+source /workspace/venv/bin/activate
+```
+
+> **Every subsequent session** (after pod restart), just activate the existing venv — no reinstall needed:
+> ```bash
+> source /workspace/venv/bin/activate
+> cd /workspace/nanogpt
+> ```
+
+5. **Redirect HuggingFace cache to `/workspace`** — critical. By default HuggingFace downloads to `/root/.cache/` on the local pod disk which has very little space and will crash mid-download. Run this once after SSH:
 
 ```bash
 export HF_HOME=/workspace/hf_cache

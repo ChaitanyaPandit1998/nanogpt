@@ -78,6 +78,10 @@ These two files (~few MB total) are the only output needed on RunPod. All larger
 
 1. Create a pod with **4× H100 SXM** (or 8× A100)
 2. Attach a **Network Volume** (≥ 50 GB) mounted at `/workspace` — data and checkpoints survive pod restarts; local pod disk is wiped on stop
+
+> **Important — Network Volume size:** 10 GB is not enough. Set it to at least **50 GB**.
+> Breakdown: FineWeb-Edu shards ~20 GB + pretrain checkpoints ~3 GB + SFT checkpoints ~1 GB + packages ~5 GB + HuggingFace cache ~5 GB = ~34 GB total. 50 GB gives comfortable headroom.
+
 3. SSH in and run:
 
 ```bash
@@ -88,17 +92,33 @@ pip install torch numpy datasets tqdm rustbpe tokenizers tiktoken
 pip install flash-attn   # H100 only — skip on A100
 ```
 
+4. **Redirect HuggingFace cache to `/workspace`** — critical. By default HuggingFace downloads to `/root/.cache/` on the local pod disk which has very little space and will crash mid-download. Run this once after SSH:
+
+```bash
+export HF_HOME=/workspace/hf_cache
+export HF_DATASETS_CACHE=/workspace/hf_cache/datasets
+```
+
+Add these to your shell profile so they persist across sessions:
+
+```bash
+echo 'export HF_HOME=/workspace/hf_cache' >> ~/.bashrc
+echo 'export HF_DATASETS_CACHE=/workspace/hf_cache/datasets' >> ~/.bashrc
+source ~/.bashrc
+```
+
 ---
 
 ### Step 6 — Tokenize pretraining data (~1 hour, CPU-bound)
 
 Downloads FineWeb-Edu 10B from HuggingFace and saves ~20 GB of `.npy` shards. One-time step.
+Make sure `HF_HOME` is set (Step 5 above) before running.
 
 ```bash
-python fineweb.py --tokenizer-dir tokenizer/ --output-dir edu_fineweb10B/
+python fineweb.py --tokenizer-dir tokenizer/ --output-dir /workspace/edu_fineweb10B/
 ```
 
-Saves ~100 shards to `edu_fineweb10B/` (100M tokens each). `train_gpt.py` picks them up automatically.
+Saves ~100 shards to `/workspace/edu_fineweb10B/` (100M tokens each). `train_gpt.py` picks them up automatically.
 
 ---
 
@@ -114,6 +134,9 @@ torchrun --nproc_per_node=4 train_gpt.py
 # Single GPU (smoke test / development)
 python train_gpt.py
 ```
+
+Checkpoints and logs write to `log/` relative to wherever you run the command.
+Run from `/workspace/blk-gpt/` so everything lands on the network volume.
 
 What happens automatically during training:
 

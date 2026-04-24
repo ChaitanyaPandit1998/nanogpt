@@ -65,8 +65,8 @@ from common import (
     get_peak_flops,
 )
 from optim import MuonAdamW
-from dataloader import DataLoaderLite
-from checkpoint_manager import save_checkpoint
+from dataloader import DataLoaderLite, load_tokens
+from checkpoint_manager import save_checkpoint, load_checkpoint, find_last_step
 
 # ---------------------------------------------------------------------------
 # Core helpers
@@ -808,12 +808,35 @@ print0(f"Parameters: {num_params:,} | Est. FLOPs/token: {flops_per_token:.2e}")
 log_dir  = "log"
 os.makedirs(log_dir, exist_ok=True)
 log_file = os.path.join(log_dir, "log.txt")
-with open(log_file, "w") as f:
+
+# ---------------------------------------------------------------------------
+# Resume from checkpoint if one exists
+start_step        = 0
+smooth_train_loss = 0.0
+
+resume_step = find_last_step(log_dir) if os.path.isdir(log_dir) else None
+if resume_step is not None:
+    print0(f"Found checkpoint at step {resume_step} — resuming...")
+    model_data, optim_data, meta = load_checkpoint(
+        log_dir, resume_step, device, load_optimizer=True, rank=ddp_rank
+    )
+    raw_model.load_state_dict(model_data)
+    optimizer.load_state_dict(optim_data)
+    start_step        = meta["step"]
+    smooth_train_loss = meta.get("smooth_train_loss", 0.0)
+    # Restore data loader to exact position it was at when checkpoint was saved
+    dl_shard = meta.get("dataloader_shard", 0)
+    dl_pos   = meta.get("dataloader_position", 0)
+    train_loader.current_shard    = dl_shard
+    train_loader.tokens           = load_tokens(train_loader.shards[dl_shard])
+    train_loader.current_position = dl_pos
+    print0(f"Resumed from step {start_step} | shard {dl_shard} | position {dl_pos:,}")
+
+# Append to existing log if resuming; otherwise start fresh
+with open(log_file, "a" if start_step > 0 else "w") as f:
     pass
 
-smooth_train_loss = 0.0  # EMA of training loss for nicer logging
-
-for step in range(max_steps):
+for step in range(start_step, max_steps):
     t0 = time.time()
     last_step = (step == max_steps - 1)
 
@@ -837,15 +860,18 @@ for step in range(max_steps):
             print(f"validation loss: {val_loss_accum.item():.4f}")
             with open(log_file, "a") as f:
                 f.write(f"{step} val {val_loss_accum.item():.4f}\n")
-            if step > 0 and (step % 5000 == 0 or last_step):
+            if step > 0 and (step % 1000 == 0 or last_step):
                 save_checkpoint(
                     log_dir,
                     step,
                     raw_model.state_dict(),
                     optimizer.state_dict(),
                     {
-                        "step":     step,
-                        "val_loss": val_loss_accum.item(),
+                        "step":               step,
+                        "val_loss":           val_loss_accum.item(),
+                        "smooth_train_loss":  smooth_train_loss,
+                        "dataloader_shard":   train_loader.current_shard,
+                        "dataloader_position":train_loader.current_position,
                         "model_config": {
                             "n_layer":        raw_model.config.n_layer,
                             "n_head":         raw_model.config.n_head,

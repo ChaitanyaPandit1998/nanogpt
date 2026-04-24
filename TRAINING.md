@@ -155,8 +155,15 @@ What happens automatically during training:
 | Every step | Train loss (EMA), grad norm, tok/s, MFU — console + `log/log.txt` |
 | 250 steps | Validation loss — console + `log/log.txt` |
 | 250 steps | 4 sample text generations — console |
-| 5000 steps | Checkpoint saved to `log/` |
+| 1000 steps | Checkpoint saved to `log/` (~8 min of max lost work) |
 | 19073 steps | Training ends (~1 epoch on 10B tokens) |
+
+**Resume is automatic.** If training is interrupted, just re-run the same command — it detects the latest checkpoint and continues from that step:
+
+```
+Found checkpoint at step 3000 — resuming...
+Resumed from step 3000 | shard 1 | position 786432000
+```
 
 Key defaults in `train_gpt.py`:
 

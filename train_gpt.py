@@ -814,7 +814,10 @@ log_file = os.path.join(log_dir, "log.txt")
 start_step        = 0
 smooth_train_loss = 0.0
 
-resume_step = find_last_step(log_dir) if os.path.isdir(log_dir) else None
+try:
+    resume_step = find_last_step(log_dir)
+except (FileNotFoundError, ValueError):
+    resume_step = None
 if resume_step is not None:
     print0(f"Found checkpoint at step {resume_step} — resuming...")
     model_data, optim_data, meta = load_checkpoint(

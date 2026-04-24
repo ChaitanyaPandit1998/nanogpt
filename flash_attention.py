@@ -67,6 +67,11 @@ def _resolve_use_fa3():
 
 USE_FA3 = _resolve_use_fa3()
 
+if USE_FA3:
+    print("flash_attention: using Flash Attention 3 (FA3) — Hopper kernel")
+else:
+    print(f"flash_attention: SDPA fallback (FA3 available={HAS_FA3}, torch={torch.__version__})")
+
 
 # =============================================================================
 # SDPA helpers

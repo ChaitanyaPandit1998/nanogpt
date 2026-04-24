@@ -54,7 +54,7 @@ parser.add_argument("--pretrain-dir",     type=str, required=True,      help="di
 parser.add_argument("--pretrain-step",    type=int, default=None,        help="which pretrain step to load (default: last)")
 # Output
 parser.add_argument("--checkpoint-dir",  type=str, default="sft_checkpoints", help="where to save SFT checkpoints")
-parser.add_argument("--save-every",      type=int, default=500,          help="save a checkpoint every N steps (always saves at the final step)")
+parser.add_argument("--save-every",      type=int, default=2000,         help="save a checkpoint every N steps (always saves at the final step)")
 # Training horizon
 parser.add_argument("--num-steps",       type=int, default=-1,           help="total optimization steps (-1 = auto: ~1 epoch over training data)")
 # Batch

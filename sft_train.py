@@ -193,7 +193,6 @@ model_config_dict = {
     "n_embd":         raw_model.config.n_embd,
     "block_size":     raw_model.config.block_size,
     "vocab_size":     raw_model.config.vocab_size,
-    "window_pattern": raw_model.config.window_pattern,
 }
 
 # ---------------------------------------------------------------------------

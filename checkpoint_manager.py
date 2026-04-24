@@ -17,10 +17,8 @@ from common import print0
 
 
 def _patch_missing_config_keys(model_config_kwargs):
-    """Add default values for new config keys missing in old checkpoints."""
-    if "window_pattern" not in model_config_kwargs:
-        model_config_kwargs["window_pattern"] = "L"
-        print0(f"Patching missing window_pattern in model config to 'L'")
+    """Remove unknown keys that are not part of GPTConfig."""
+    model_config_kwargs.pop("window_pattern", None)  # window_pattern is computed from n_layer, not stored
 
 
 def _patch_missing_keys(model_data, model_config):

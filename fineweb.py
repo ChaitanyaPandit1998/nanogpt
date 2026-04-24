@@ -33,6 +33,13 @@ args = parser.parse_args()
 DATA_CACHE_DIR = os.path.join(os.path.dirname(__file__), args.output_dir)
 os.makedirs(DATA_CACHE_DIR, exist_ok=True)
 
+existing_shards = sorted([
+    f for f in os.listdir(DATA_CACHE_DIR)
+    if f.endswith(".npy") and f.startswith("edufineweb_")
+])
+if existing_shards:
+    print(f"Found {len(existing_shards)} existing shard(s) — will skip writing them and resume.")
+
 # ---------------------------------------------------------------------------
 # Multiprocessing-safe tokenizer initializer
 # Each worker process loads its own tokenizer instance to avoid pickle issues.
@@ -85,7 +92,10 @@ with mp.Pool(nprocs, initializer=_init_worker, initargs=(args.tokenizer_dir,)) a
             remainder = args.shard_size - token_count
             progress_bar.update(remainder)
             all_tokens_np[token_count:token_count + remainder] = tokens[:remainder]
-            write_datafile(filename, all_tokens_np)
+            if os.path.exists(filename + ".npy"):
+                print(f"Shard {shard_index} already exists, skipping.")
+            else:
+                write_datafile(filename, all_tokens_np)
             shard_index  += 1
             progress_bar  = None
             all_tokens_np[0:len(tokens) - remainder] = tokens[remainder:]
@@ -94,4 +104,7 @@ with mp.Pool(nprocs, initializer=_init_worker, initargs=(args.tokenizer_dir,)) a
     if token_count != 0:
         split    = "val" if shard_index == 0 else "train"
         filename = os.path.join(DATA_CACHE_DIR, f"edufineweb_{split}_{shard_index:06d}")
-        write_datafile(filename, all_tokens_np[:token_count])
+        if os.path.exists(filename + ".npy"):
+            print(f"Shard {shard_index} already exists, skipping.")
+        else:
+            write_datafile(filename, all_tokens_np[:token_count])

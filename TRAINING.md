@@ -9,11 +9,11 @@ Step-by-step guide to go from raw data to a fine-tuned model.
 | 3. Push tokenizer to GitHub | Local | ~1 min |
 | 4. Set up RunPod | RunPod | ~5 min |
 | 5. Tokenize pretraining data | RunPod (CPU) | ~1 hour |
-| 6. Pretrain | RunPod — 6× H100 SXM | ~1.5 hours |
+| 6. Pretrain | RunPod — 4× H100 SXM | ~2.25 hours |
 | 7. Prepare SFT data | RunPod (CPU) | ~5 min |
-| 8. SFT | RunPod — 6× H100 SXM | ~15 min |
+| 8. SFT | RunPod — 4× H100 SXM | ~15 min |
 | 9. Chat with the model | RunPod | instant |
-| 10. (Optional) RL on GSM8K | RunPod — 6× H100 SXM | ~40 min |
+| 10. (Optional) RL on GSM8K | RunPod — 4× H100 SXM | ~40 min |
 
 ---
 
@@ -76,7 +76,7 @@ These two files (~few MB total) are the only output needed on RunPod. All larger
 
 ### Step 5 — Set up the RunPod instance
 
-1. Create a pod with **6× H100 SXM** (or 8× A100)
+1. Create a pod with **4× H100 SXM** (or 8× A100)
 2. Attach a **Network Volume** (≥ 50 GB) mounted at `/workspace` — data and checkpoints survive pod restarts; local pod disk is wiped on stop
 3. SSH in and run:
 
@@ -102,15 +102,14 @@ Saves ~100 shards to `edu_fineweb10B/` (100M tokens each). `train_gpt.py` picks 
 
 ---
 
-### Step 7 — Pretrain (~1.5 hours on 6× H100 SXM)
+### Step 7 — Pretrain (~2.25 hours on 4× H100 SXM)
 
-> **Before running:** open `train_gpt.py` and change `B = 64` → `B = 85`.
-> With 6 GPUs and B=64 the effective batch is only 393K tokens (not the intended ~524K),
-> so one epoch only covers 7.5B of the 10B tokens. B=85 gives ~522K per step — a full epoch.
+> **Before running:** open `train_gpt.py` and change `B = 64` → `B = 128`.
+> With 4 GPUs and B=128, T=1024: 128 × 1024 × 4 = 524,288 tokens — exactly the intended batch size.
 
 ```bash
-# 6× H100 SXM
-torchrun --nproc_per_node=6 train_gpt.py
+# 4× H100 SXM
+torchrun --nproc_per_node=4 train_gpt.py
 
 # Single GPU (smoke test / development)
 python train_gpt.py
@@ -130,8 +129,8 @@ Key defaults in `train_gpt.py`:
 
 | Setting | Value |
 |---|---|
-| Micro batch | `B=85, T=1024` (after fix above) |
-| Total batch size | ~522K tokens |
+| Micro batch | `B=128, T=1024` (after fix above) |
+| Total batch size | 524,288 tokens (exact) |
 | Model | `n_layer=12, n_head=12, n_kv_head=4, n_embd=768` (≈124M params) |
 | Muon LR | `matrix_lr=0.02` |
 | Checkpoints | `log/model_{step:06d}.pt` + `log/meta_{step:06d}.json` |
@@ -156,7 +155,7 @@ Or supply your own JSONL — one conversation per line:
 
 ---
 
-### Step 9 — SFT (~15 min on 6× H100 SXM)
+### Step 9 — SFT (~15 min on 4× H100 SXM)
 
 ```bash
 python sft_train.py \
@@ -165,7 +164,8 @@ python sft_train.py \
   --pretrain-dir   log/ \
   --tokenizer-dir  tokenizer/ \
   --checkpoint-dir sft_checkpoints/ \
-  --lr-scale       0.1
+  --lr-scale       0.1 \
+  --sample-every   500
 ```
 
 Logs train loss, grad norm, and val BPB to `sft_checkpoints/log.txt`.

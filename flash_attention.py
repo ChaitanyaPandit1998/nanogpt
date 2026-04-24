@@ -16,6 +16,11 @@ Usage (drop-in replacement for FA3):
 import torch
 import torch.nn.functional as F
 
+# F.scaled_dot_product_attention gained enable_gqa in PyTorch 2.5.
+# On older versions we manually expand KV heads instead.
+_TORCH_VER = tuple(int(x) for x in torch.__version__.split(".")[:2])
+_HAS_SDPA_GQA = _TORCH_VER >= (2, 5)
+
 
 # =============================================================================
 # Detection: Try to load FA3 on Hopper+ GPUs
@@ -71,13 +76,22 @@ def _sdpa_attention(q, k, v, window_size, enable_gqa):
     SDPA attention with sliding window support.
     q, k, v are (B, H, T, D) format.
     """
+    # PyTorch <2.5 lacks enable_gqa; expand KV heads to match Q heads manually.
+    if enable_gqa and not _HAS_SDPA_GQA:
+        n_rep = q.size(1) // k.size(1)
+        k = k.repeat_interleave(n_rep, dim=1)
+        v = v.repeat_interleave(n_rep, dim=1)
+        enable_gqa = False
+
+    sdpa_kwargs = {"enable_gqa": enable_gqa} if _HAS_SDPA_GQA else {}
+
     Tq = q.size(2)
     Tk = k.size(2)
     window = window_size[0]
 
     # Full context, same length
     if (window < 0 or window >= Tq) and Tq == Tk:
-        return F.scaled_dot_product_attention(q, k, v, is_causal=True, enable_gqa=enable_gqa)
+        return F.scaled_dot_product_attention(q, k, v, is_causal=True, **sdpa_kwargs)
 
     # Single token generation
     if Tq == 1:
@@ -86,7 +100,7 @@ def _sdpa_attention(q, k, v, window_size, enable_gqa):
             start = max(0, Tk - (window + 1))
             k = k[:, :, start:, :]
             v = v[:, :, start:, :]
-        return F.scaled_dot_product_attention(q, k, v, is_causal=False, enable_gqa=enable_gqa)
+        return F.scaled_dot_product_attention(q, k, v, is_causal=False, **sdpa_kwargs)
 
     # Need explicit mask for sliding window/chunk inference
     device = q.device
@@ -99,7 +113,7 @@ def _sdpa_attention(q, k, v, window_size, enable_gqa):
     if window >= 0 and window < Tk:
         mask = mask & ((row_idx - col_idx) <= window)
 
-    return F.scaled_dot_product_attention(q, k, v, attn_mask=mask, enable_gqa=enable_gqa)
+    return F.scaled_dot_product_attention(q, k, v, attn_mask=mask, **sdpa_kwargs)
 
 # =============================================================================
 # Public API: Same interface as FA3

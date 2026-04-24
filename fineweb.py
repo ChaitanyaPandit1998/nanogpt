@@ -63,7 +63,7 @@ def write_datafile(filename, tokens_np):
 # ---------------------------------------------------------------------------
 # Download dataset and tokenize into shards
 
-fw = load_dataset("HuggingFaceFW/fineweb-edu", name="sample-10BT", split="train")
+fw = load_dataset("HuggingFaceFW/fineweb-edu", name="sample-10BT", split="train", streaming=True)
 
 nprocs = max(1, os.cpu_count() // 2)
 with mp.Pool(nprocs, initializer=_init_worker, initargs=(args.tokenizer_dir,)) as pool:

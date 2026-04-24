@@ -681,6 +681,13 @@ tokenizer = get_tokenizer(TOKENIZER_DIR)
 # ---------------------------------------------------------------------------
 # Batch / data config
 
+import argparse as _argparse
+_parser = _argparse.ArgumentParser(add_help=False)
+_parser.add_argument("--data-dir", type=str, default="edu_fineweb10B",
+                     help="Path to directory containing .npy shard files (default: edu_fineweb10B)")
+_args, _ = _parser.parse_known_args()
+DATA_DIR = _args.data_dir
+
 total_batch_size = 524288  # ~0.5M tokens
 B = 64                     # micro batch size
 T = 1024                   # sequence length
@@ -689,8 +696,8 @@ grad_accum_steps = total_batch_size // (B * T * ddp_world_size)
 print0(f"total desired batch size: {total_batch_size}")
 print0(f"=> gradient accumulation steps: {grad_accum_steps}")
 
-train_loader = DataLoaderLite(B=B, T=T, process_rank=ddp_rank, num_processes=ddp_world_size, split="train")
-val_loader   = DataLoaderLite(B=B, T=T, process_rank=ddp_rank, num_processes=ddp_world_size, split="val")
+train_loader = DataLoaderLite(B=B, T=T, process_rank=ddp_rank, num_processes=ddp_world_size, split="train", data_root=DATA_DIR)
+val_loader   = DataLoaderLite(B=B, T=T, process_rank=ddp_rank, num_processes=ddp_world_size, split="val",   data_root=DATA_DIR)
 if master_process:
     print(f"found {len(train_loader.shards)} shards for split train")
     print(f"found {len(val_loader.shards)} shards for split val")

@@ -129,10 +129,10 @@ Saves ~100 shards to `/workspace/edu_fineweb10B/` (100M tokens each). `train_gpt
 
 ```bash
 # 4× H100 SXM
-torchrun --nproc_per_node=4 train_gpt.py
+torchrun --nproc_per_node=4 train_gpt.py --data-dir /workspace/edu_fineweb10B
 
 # Single GPU (smoke test / development)
-python train_gpt.py
+python train_gpt.py --data-dir /workspace/edu_fineweb10B
 ```
 
 Checkpoints and logs write to `log/` relative to wherever you run the command.

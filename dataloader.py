@@ -25,14 +25,14 @@ class DataLoaderLite:
     Automatically advances to the next shard when the current one is exhausted.
     """
 
-    def __init__(self, B: int, T: int, process_rank: int, num_processes: int, split: str):
+    def __init__(self, B: int, T: int, process_rank: int, num_processes: int, split: str,
+                 data_root: str = "edu_fineweb10B"):
         self.B = B
         self.T = T
         self.process_rank = process_rank
         self.num_processes = num_processes
         assert split in {"train", "val"}
 
-        data_root = "edu_fineweb10B"
         shards = sorted(s for s in os.listdir(data_root) if split in s)
         self.shards = [os.path.join(data_root, s) for s in shards]
         assert len(self.shards) > 0, f"no shards found for split '{split}' in {data_root}/"

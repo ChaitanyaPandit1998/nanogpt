@@ -5,17 +5,10 @@ echo "Creating virtual environment..."
 python3 -m venv venv
 source venv/bin/activate
 
-echo "Installing core packages..."
+echo "Installing packages (PyTorch 2.9.1 + CUDA 12.8)..."
 pip install --upgrade pip
-pip install -r requirements.txt
-
-# Detect H100 and install flash-attn only if available
-if python3 -c "import torch; assert torch.cuda.is_available() and 'H100' in torch.cuda.get_device_name(0)" 2>/dev/null; then
-    echo "H100 detected — installing flash-attn (this takes ~10 min to compile)..."
-    pip install -r requirements-gpu.txt
-else
-    echo "No H100 detected — skipping flash-attn (torch SDPA fallback will be used)"
-fi
+pip install -r requirements.txt --extra-index-url https://download.pytorch.org/whl/cu128
 
 echo ""
-echo "Done. Activate with: source venv/bin/activate"
+echo "Done. Flash Attention 3 will be downloaded automatically on first GPU use."
+echo "Activate with: source venv/bin/activate"

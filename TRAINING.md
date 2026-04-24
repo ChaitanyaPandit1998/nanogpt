@@ -182,6 +182,25 @@ Key args:
 | `--num-steps` | auto (~1 epoch) | Total optimizer steps |
 | `--lr-scale` | `0.1` | Multiply pretrain LRs by this factor |
 | `--eval-every` | `250` | Evaluate val BPB every N steps |
+| `--sample-every` | `500` | Generate 3 sample chat responses every N steps to verify chat quality (0 = disable) |
+
+Every `--sample-every` steps the model generates responses to 3 fixed prompts and prints them to the console — lets you verify chat format and response quality mid-training:
+
+```
+============================================================
+Generation samples:
+  Q: What is machine learning?
+  A: Machine learning is a branch of artificial intelligence...
+
+  Q: Explain gravity to a 10-year-old.
+  A: Gravity is like an invisible pulling force...
+
+  Q: What is the capital of France?
+  A: The capital of France is Paris.
+============================================================
+```
+
+Also fires at step 0 (pre-SFT baseline) and at the final step.
 
 ---
 

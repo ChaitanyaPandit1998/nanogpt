@@ -68,6 +68,7 @@ parser.add_argument("--warmdown-ratio",  type=float, default=0.5,        help="f
 # Evaluation
 parser.add_argument("--eval-every",      type=int, default=250,          help="evaluate val bpb every N steps (-1 = only at the final step)")
 parser.add_argument("--eval-steps",      type=int, default=20,           help="number of val batches per bpb evaluation")
+parser.add_argument("--sample-every",    type=int, default=500,          help="generate sample responses every N steps to check chat quality (0 = disable)")
 # Runtime
 parser.add_argument("--device-type",     type=str, default="",           help="cuda|mps|cpu (empty = autodetect)")
 parser.add_argument("--tokenizer-dir",   type=str, default="tokenizer",  help="directory containing tokenizer.pkl (default: tokenizer/)")
@@ -255,6 +256,54 @@ def get_muon_momentum(step: int) -> float:
     return (1 - frac) * 0.85 + frac * 0.95
 
 # ---------------------------------------------------------------------------
+# Fixed prompts used to spot-check generation quality during training.
+# These run every --sample-every steps so you can eyeball whether the model
+# is learning the chat format and producing coherent responses.
+SAMPLE_PROMPTS = [
+    "What is machine learning?",
+    "Explain gravity to a 10-year-old.",
+    "What is the capital of France?",
+]
+
+@torch.no_grad()
+def sample_responses(model, tokenizer, max_new_tokens=128, temperature=0.8, top_k=50):
+    """Generate one response per SAMPLE_PROMPTS and print them."""
+    model.eval()
+    bos           = tokenizer.get_bos_token_id()
+    assistant_end = tokenizer.encode_special("<|assistant_end|>")
+    device        = next(model.parameters()).device
+
+    print0("\n" + "=" * 60)
+    print0("Generation samples:")
+    for prompt in SAMPLE_PROMPTS:
+        # Build prompt tokens in chat format
+        ids = tokenizer.render_for_completion({"messages": [
+            {"role": "user",      "content": prompt},
+            {"role": "assistant", "content": ""},
+        ]})
+        x = torch.tensor([ids], dtype=torch.long, device=device)
+
+        for _ in range(max_new_tokens):
+            logits, _ = model(x)
+            logits = logits[:, -1, :] / temperature
+            if top_k:
+                v, _ = torch.topk(logits, min(top_k, logits.size(-1)))
+                logits[logits < v[:, [-1]]] = float("-inf")
+            probs    = torch.softmax(logits, dim=-1)
+            next_tok = torch.multinomial(probs, 1)
+            tok_id   = next_tok.item()
+            if tok_id == assistant_end or tok_id == bos:
+                break
+            x = torch.cat([x, next_tok], dim=1)
+
+        response_ids = x[0, len(ids):].tolist()
+        response     = tokenizer.decode(response_ids)
+        print0(f"  Q: {prompt}")
+        print0(f"  A: {response.strip()}")
+        print0("")
+    print0("=" * 60 + "\n")
+
+# ---------------------------------------------------------------------------
 # Training loop
 print0(f"Starting SFT | steps={num_steps} | B={args.batch_size} | T={args.seq_len} | grad_accum={args.grad_accum} | lr_scale={args.lr_scale}")
 
@@ -287,6 +336,11 @@ for step in range(num_steps + 1):
             with open(log_file, "a") as _f:
                 _f.write(f"{step} val_bpb {bpb:.4f}\n")
         model.train()
+
+    # ---- Generation samples ----
+    if master_process and args.sample_every > 0 and (last_step or step % args.sample_every == 0):
+        sample_responses(raw_model, tokenizer)
+        raw_model.train()
 
     # ---- Checkpoint ----
     if master_process and (last_step or (step > 0 and step % args.save_every == 0)):

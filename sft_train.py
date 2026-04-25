@@ -138,8 +138,12 @@ def make_data_generator(convs, T, rank, world_size, batch_size):
         nonlocal cursor
         while len(buf) < 200:
             ids, msk = tokenize_conversation(convs[cursor % len(convs)])
-            buf.append((ids, msk))
             cursor += world_size
+            # Skip conversations that exceed the row capacity — they can never be
+            # placed by bestfit, accumulate in the buffer, and cause all-masked batches.
+            # 58% of SmolTalk fits in 1024 tokens (267K conversations), still ample for SFT.
+            if len(ids) <= row_capacity:
+                buf.append((ids, msk))
 
     while True:
         rows, mask_rows = [], []

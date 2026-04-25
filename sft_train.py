@@ -382,8 +382,9 @@ for step in range(num_steps + 1):
         # Check BEFORE backward — a NaN loss would write NaN gradients that
         # contaminate all subsequent micro-steps even if their loss is finite.
         if not torch.isfinite(loss):
-            print0(f"[WARNING] NaN loss in micro-step {micro} at step {step} — aborting step")
+            print0(f"[WARNING] NaN loss in micro-step {micro} at step {step} — skipping batch")
             nan_in_micro = True
+            x, y = next(train_loader)  # advance past the bad batch so we don't retry it
             break
         (loss / args.grad_accum).backward()
         x, y = next(train_loader)

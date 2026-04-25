@@ -134,7 +134,7 @@ class Engine:
         # 1) Prefill with batch=1
         kv_prefill = KVCache(batch_size=1, seq_len=len(tokens), device=device, dtype=dtype, **kv_kwargs)
         ids = torch.tensor([tokens], dtype=torch.long, device=device)
-        logits = self.model.forward(ids, kv_cache=kv_prefill)
+        logits, _ = self.model.forward(ids, kv_cache=kv_prefill)
         logits = logits[:, -1, :].expand(num_samples, -1)   # (num_samples, vocab_size)
 
         # 2) Replicate KV cache for all samples
@@ -167,7 +167,8 @@ class Engine:
 
             # Forward single new token through all samples
             ids = next_ids.to(device)                        # (B, 1)
-            logits = self.model.forward(ids, kv_cache=kv_decode)[:, -1, :]
+            logits, _ = self.model.forward(ids, kv_cache=kv_decode)
+            logits = logits[:, -1, :]
 
     def generate_batch(self, tokens, num_samples=1, bos=None, assistant_end=None, **kwargs):
         """

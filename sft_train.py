@@ -331,19 +331,42 @@ print0(f"Starting SFT | steps={num_steps} | B={args.batch_size} | T={args.seq_le
 if master_process:
     import os as _os
     _os.makedirs(args.checkpoint_dir, exist_ok=True)
-    log_file = _os.path.join(args.checkpoint_dir, "log.txt")
-    with open(log_file, "w") as _f:
-        pass  # truncate / create
 else:
     log_file = None
 
-x, y     = next(train_loader)
-ema_loss = 0.0
-ema_beta = 0.9
+# ---------------------------------------------------------------------------
+# Resume from SFT checkpoint if one exists
+start_step = 0
+ema_loss   = 0.0
+ema_beta   = 0.9
+
+try:
+    sft_resume_step = find_last_step(args.checkpoint_dir)
+    print0(f"Found SFT checkpoint at step {sft_resume_step} — resuming...")
+    sft_model_data, sft_optim_data, sft_meta = load_checkpoint(
+        args.checkpoint_dir, sft_resume_step, device, load_optimizer=True, rank=0
+    )
+    raw_model.load_state_dict(sft_model_data)
+    if sft_optim_data is not None:
+        optimizer.load_state_dict(sft_optim_data)
+    start_step = sft_meta["step"]
+    ema_loss   = sft_meta.get("smooth_train_loss", 0.0)
+    # Data loader restarts from the beginning — some data repetition is acceptable
+    # since the model/optimizer state is correctly restored from the checkpoint.
+    print0(f"Resumed SFT from step {start_step}")
+except (FileNotFoundError, ValueError):
+    pass  # no SFT checkpoint found — start fresh
+
+if master_process:
+    log_file = _os.path.join(args.checkpoint_dir, "log.txt")
+    with open(log_file, "a" if start_step > 0 else "w") as _f:
+        pass
+
+x, y = next(train_loader)
 total_time = 0.0
 min_val_bpb = float("inf")
 
-for step in range(num_steps + 1):
+for step in range(start_step, num_steps + 1):
     last_step = (step == num_steps)
     progress  = step / max(num_steps, 1)
 
@@ -371,12 +394,13 @@ for step in range(num_steps + 1):
             raw_model.state_dict(),
             optimizer.state_dict(),
             {
-                "step":          step,
-                "model_config":  model_config_dict,
-                "pretrain_dir":  args.pretrain_dir,
-                "pretrain_step": pretrain_step,
-                "lr_scale":      args.lr_scale,
-                "val_bpb":       min_val_bpb,
+                "step":             step,
+                "model_config":     model_config_dict,
+                "pretrain_dir":     args.pretrain_dir,
+                "pretrain_step":    pretrain_step,
+                "lr_scale":         args.lr_scale,
+                "val_bpb":          min_val_bpb,
+                "smooth_train_loss": ema_loss,
             },
             rank=ddp_rank,
         )

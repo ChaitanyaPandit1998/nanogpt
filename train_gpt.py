@@ -820,8 +820,10 @@ except (FileNotFoundError, ValueError):
     resume_step = None
 if resume_step is not None:
     print0(f"Found checkpoint at step {resume_step} — resuming...")
+    # All ranks load rank-0's optimizer — in DDP, optimizer states are
+    # identical across ranks (same averaged gradients → same updates).
     model_data, optim_data, meta = load_checkpoint(
-        log_dir, resume_step, device, load_optimizer=True, rank=ddp_rank
+        log_dir, resume_step, device, load_optimizer=True, rank=0
     )
     raw_model.load_state_dict(model_data)
     optimizer.load_state_dict(optim_data)

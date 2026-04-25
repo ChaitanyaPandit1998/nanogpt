@@ -136,12 +136,10 @@ def find_largest_model(checkpoints_dir):
 
 
 def load_model_from_dir(checkpoints_dir, device, phase, model_tag=None, step=None):
-    """High-level loader: resolves model_tag and step automatically if not provided."""
-    if model_tag is None:
-        model_tag = find_largest_model(checkpoints_dir)
-        print0(f"Auto-selected model tag: {model_tag}")
-    checkpoint_dir = os.path.join(checkpoints_dir, model_tag)
+    """High-level loader: finds the latest checkpoint in checkpoints_dir and loads it."""
+    # blk-gpt stores checkpoints flat in checkpoints_dir (model_XXXXXX.pt)
+    # not in nanochat-style subdirectories
     if step is None:
-        step = find_last_step(checkpoint_dir)
-    print0(f"Loading from {checkpoint_dir} at step {step}")
-    return build_model(checkpoint_dir, step, device, phase)
+        step = find_last_step(checkpoints_dir)
+    print0(f"Loading from {checkpoints_dir} at step {step}")
+    return build_model(checkpoints_dir, step, device, phase)

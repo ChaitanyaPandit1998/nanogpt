@@ -373,19 +373,30 @@ for step in range(num_steps + 1):
     # ---- Forward / backward ----
     synchronize()
     t0 = time.time()
+    nan_in_micro = False
     for micro in range(args.grad_accum):
         # Only sync gradients on the last accumulation step in DDP
         if ddp:
             model.require_backward_grad_sync = (micro == args.grad_accum - 1)
         _, loss = model(x, y)
+        # Check BEFORE backward — a NaN loss would write NaN gradients that
+        # contaminate all subsequent micro-steps even if their loss is finite.
+        if not torch.isfinite(loss):
+            print0(f"[WARNING] NaN loss in micro-step {micro} at step {step} — aborting step")
+            nan_in_micro = True
+            break
         (loss / args.grad_accum).backward()
         x, y = next(train_loader)
 
+    if nan_in_micro:
+        model.zero_grad(set_to_none=True)
+        continue
+
     norm_val = torch.nn.utils.clip_grad_norm_(raw_model.parameters(), 1.0)
 
-    # Skip corrupt updates rather than letting NaN weights propagate
-    if not torch.isfinite(loss):
-        print0(f"[WARNING] Non-finite loss at step {step} — skipping update")
+    # Second safety net: catch NaN grad norm (e.g. from silent BF16 overflow)
+    if not torch.isfinite(norm_val):
+        print0(f"[WARNING] Non-finite grad norm at step {step} — skipping update")
         model.zero_grad(set_to_none=True)
         continue
 

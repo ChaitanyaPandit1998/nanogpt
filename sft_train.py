@@ -209,6 +209,24 @@ optimizer = raw_model.setup_optimizer(
 for group in optimizer.param_groups:
     group["initial_lr"] = group["lr"]
 
+# Warm-start optimizer from pretrain checkpoint (momentum buffers only, LRs reset).
+# Without this, Muon's Newton-Schulz on zero momentum produces large erratic steps
+# in early SFT — the same instability nanochat avoids by loading pretrain momentum.
+_optim_step = pretrain_step
+_, _optim_data, _ = load_checkpoint(
+    args.pretrain_dir, _optim_step, device, load_optimizer=True, rank=0
+)
+if _optim_data is not None:
+    _base_lrs = [group["lr"] for group in optimizer.param_groups]
+    optimizer.load_state_dict(_optim_data)
+    for group, base_lr in zip(optimizer.param_groups, _base_lrs):
+        group["lr"]         = base_lr
+        group["initial_lr"] = base_lr
+    del _optim_data
+    print0(f"Loaded pretrain optimizer momentum buffers (LRs reset to SFT values)")
+else:
+    print0("WARNING: pretrain optimizer not found — starting with cold optimizer")
+
 # ---------------------------------------------------------------------------
 # Data
 print0(f"Loading training data: {args.data}")

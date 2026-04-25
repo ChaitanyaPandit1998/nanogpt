@@ -103,6 +103,12 @@ while True:
     # Kick off assistant
     conversation_tokens.append(assistant_start)
 
+    # Truncate old context if conversation exceeds the model's block_size.
+    # Keep BOS at position 0, drop oldest turns from the middle.
+    max_ctx = model.config.block_size - args.max_tokens - 4  # small safety margin
+    if len(conversation_tokens) > max_ctx:
+        conversation_tokens = [conversation_tokens[0]] + conversation_tokens[-(max_ctx - 1):]
+
     response_tokens: list[int] = []
     print("\nAssistant: ", end="", flush=True)
     for token_column, _ in engine.generate(conversation_tokens, **generate_kwargs):

@@ -665,334 +665,336 @@ class GPT(nn.Module):
         return flops_matmul + flops_attn + flops_lmhead
 
 
-# ---------------------------------------------------------------------------
-# DDP / device setup (via common.py — replaces the inline init block)
 
-device_type = autodetect_device_type()
-ddp, ddp_rank, ddp_local_rank, ddp_world_size, device = compute_init(device_type)
-master_process = ddp_rank == 0   # this process will do logging, checkpointing etc.
-print0(f"COMPUTE_DTYPE: {COMPUTE_DTYPE} ({COMPUTE_DTYPE_REASON})")
+if __name__ == '__main__':
+    # ---------------------------------------------------------------------------
+    # DDP / device setup (via common.py — replaces the inline init block)
 
-# Custom BPE tokenizer (trained by tok_train.py).
-# The tokenizer directory must exist before running pretraining.
-TOKENIZER_DIR = "tokenizer"
-tokenizer = get_tokenizer(TOKENIZER_DIR)
+    device_type = autodetect_device_type()
+    ddp, ddp_rank, ddp_local_rank, ddp_world_size, device = compute_init(device_type)
+    master_process = ddp_rank == 0   # this process will do logging, checkpointing etc.
+    print0(f"COMPUTE_DTYPE: {COMPUTE_DTYPE} ({COMPUTE_DTYPE_REASON})")
 
-# ---------------------------------------------------------------------------
-# Batch / data config
+    # Custom BPE tokenizer (trained by tok_train.py).
+    # The tokenizer directory must exist before running pretraining.
+    TOKENIZER_DIR = "tokenizer"
+    tokenizer = get_tokenizer(TOKENIZER_DIR)
 
-import argparse as _argparse
-_parser = _argparse.ArgumentParser(add_help=False)
-_parser.add_argument("--data-dir", type=str, default="edu_fineweb10B",
-                     help="Path to directory containing .npy shard files (default: edu_fineweb10B)")
-_args, _ = _parser.parse_known_args()
-DATA_DIR = _args.data_dir
+    # ---------------------------------------------------------------------------
+    # Batch / data config
 
-total_batch_size = 524288  # ~0.5M tokens
-B = 64                     # micro batch size
-T = 1024                   # sequence length
-assert total_batch_size % (B * T * ddp_world_size) == 0
-grad_accum_steps = total_batch_size // (B * T * ddp_world_size)
-print0(f"total desired batch size: {total_batch_size}")
-print0(f"=> gradient accumulation steps: {grad_accum_steps}")
+    import argparse as _argparse
+    _parser = _argparse.ArgumentParser(add_help=False)
+    _parser.add_argument("--data-dir", type=str, default="edu_fineweb10B",
+                         help="Path to directory containing .npy shard files (default: edu_fineweb10B)")
+    _args, _ = _parser.parse_known_args()
+    DATA_DIR = _args.data_dir
 
-train_loader = DataLoaderLite(B=B, T=T, process_rank=ddp_rank, num_processes=ddp_world_size, split="train", data_root=DATA_DIR)
-val_loader   = DataLoaderLite(B=B, T=T, process_rank=ddp_rank, num_processes=ddp_world_size, split="val",   data_root=DATA_DIR)
-if master_process:
-    print(f"found {len(train_loader.shards)} shards for split train")
-    print(f"found {len(val_loader.shards)} shards for split val")
+    total_batch_size = 524288  # ~0.5M tokens
+    B = 64                     # micro batch size
+    T = 1024                   # sequence length
+    assert total_batch_size % (B * T * ddp_world_size) == 0
+    grad_accum_steps = total_batch_size // (B * T * ddp_world_size)
+    print0(f"total desired batch size: {total_batch_size}")
+    print0(f"=> gradient accumulation steps: {grad_accum_steps}")
 
-# ---------------------------------------------------------------------------
-# Model
-
-model = GPT(GPTConfig(vocab_size=tokenizer.get_vocab_size()))
-model.to(device)
-use_compile = False
-if use_compile:
-    model = torch.compile(model, dynamic=False)
-if ddp:
-    model = DDP(model, device_ids=[ddp_local_rank])
-raw_model = model.module if ddp else model
-
-# ---------------------------------------------------------------------------
-# Optimizer
-# Muon lr is higher than typical AdamW because Polar Express orthogonalised
-# updates are well-scaled and don't need conservative step sizes.
-matrix_lr      = 0.02
-embedding_lr   = 0.001   # wte: sparse updates, lower LR
-unembedding_lr = 0.004   # lm_head: 4× higher than wte — output projection has larger
-                         # gradient magnitude and needs a faster learning rate to
-                         # converge at the same pace as the embeddings it reads from.
-scalar_lr      = 0.005
-weight_decay   = 0.01
-
-optimizer = raw_model.setup_optimizer(
-    matrix_lr=matrix_lr,
-    embedding_lr=embedding_lr,
-    unembedding_lr=unembedding_lr,
-    scalar_lr=scalar_lr,
-    weight_decay=weight_decay,
-)
-
-# ---------------------------------------------------------------------------
-# LR / momentum / weight-decay schedulers (nanochat-style)
-#
-# LR schedule: linear warmup → constant plateau → linear warmdown (trapezoidal).
-# This replaces the cosine decay used in the original train_gpt2.py.
-# Trapezoidal schedules often outperform cosine in practice and are simpler
-# to reason about — the plateau makes it easy to extend training without
-# recalculating decay curves.
-#
-# Muon momentum schedule:
-#   Warms from 0.85 → 0.97 in the first 400 steps (avoids overshooting early)
-#   Warms down to 0.90 during the LR warmdown phase (reduces oscillation at end)
-#
-# Weight decay schedule:
-#   Cosine decay from weight_decay → 0 over the full run.
-#   Decaying weight decay prevents the regularization from under-fitting at the
-#   end of training when the model is already well-converged.
-#
-# All param groups carry 'initial_lr'; the scheduler multiplies uniformly:
-#   group["lr"] = group["initial_lr"] * lr_multiplier
-
-max_steps      = 19073   # ~1 epoch on 10B token dataset with 0.5M token batches
-warmup_steps   = 715
-warmdown_ratio = 0.65    # fraction of max_steps spent in warmdown
-final_lr_frac  = 0.1     # minimum LR as a fraction of peak LR
-
-def get_lr_multiplier(it: int) -> float:
-    """Trapezoidal LR schedule: warmup → 1.0 → warmdown to final_lr_frac."""
-    warmdown_iters = round(warmdown_ratio * max_steps)
-    if it < warmup_steps:
-        return (it + 1) / warmup_steps
-    elif it <= max_steps - warmdown_iters:
-        return 1.0
-    else:
-        progress = (max_steps - it) / warmdown_iters
-        return progress + (1 - progress) * final_lr_frac
-
-def get_muon_momentum(it: int) -> float:
-    """
-    Muon momentum schedule.
-    Warm-up to 0.97 in first 400 steps, stable plateau, then warm-down to 0.90.
-    """
-    warmdown_iters = round(warmdown_ratio * max_steps)
-    warmdown_start = max_steps - warmdown_iters
-    if it < 400:
-        frac = it / 400
-        return (1 - frac) * 0.85 + frac * 0.97
-    elif it >= warmdown_start:
-        progress = (it - warmdown_start) / warmdown_iters
-        return 0.97 * (1 - progress) + 0.90 * progress
-    return 0.97
-
-def get_weight_decay(it: int) -> float:
-    """Cosine decay of weight_decay from its initial value to zero."""
-    return weight_decay * 0.5 * (1 + math.cos(math.pi * it / max_steps))
-
-# ---------------------------------------------------------------------------
-# MFU setup
-
-num_params      = sum(p.numel() for p in raw_model.parameters())
-flops_per_token = raw_model.estimate_flops()
-if device_type == "cuda":
-    gpu_peak_flops = get_peak_flops(torch.cuda.get_device_name(0))
-    print0(f"GPU: {torch.cuda.get_device_name(0)} | Peak FLOPS (BF16): {gpu_peak_flops:.2e}")
-else:
-    gpu_peak_flops = float("inf")  # MFU not meaningful on CPU/MPS
-print0(f"Parameters: {num_params:,} | Est. FLOPs/token: {flops_per_token:.2e}")
-
-# ---------------------------------------------------------------------------
-# Training loop
-
-log_dir  = "log"
-os.makedirs(log_dir, exist_ok=True)
-log_file = os.path.join(log_dir, "log.txt")
-
-# ---------------------------------------------------------------------------
-# Resume from checkpoint if one exists
-start_step        = 0
-smooth_train_loss = 0.0
-
-try:
-    resume_step = find_last_step(log_dir)
-except (FileNotFoundError, ValueError):
-    resume_step = None
-if resume_step is not None:
-    print0(f"Found checkpoint at step {resume_step} — resuming...")
-    # All ranks load rank-0's optimizer — in DDP, optimizer states are
-    # identical across ranks (same averaged gradients → same updates).
-    model_data, optim_data, meta = load_checkpoint(
-        log_dir, resume_step, device, load_optimizer=True, rank=0
-    )
-    raw_model.load_state_dict(model_data)
-    optimizer.load_state_dict(optim_data)
-    start_step        = meta["step"]
-    smooth_train_loss = meta.get("smooth_train_loss", 0.0)
-    # Restore data loader to exact position it was at when checkpoint was saved
-    dl_shard = meta.get("dataloader_shard", 0)
-    dl_pos   = meta.get("dataloader_position", 0)
-    train_loader.current_shard    = dl_shard
-    train_loader.tokens           = load_tokens(train_loader.shards[dl_shard])
-    train_loader.current_position = dl_pos
-    print0(f"Resumed from step {start_step} | shard {dl_shard} | position {dl_pos:,}")
-
-# Append to existing log if resuming; otherwise start fresh
-with open(log_file, "a" if start_step > 0 else "w") as f:
-    pass
-
-for step in range(start_step, max_steps):
-    t0 = time.time()
-    last_step = (step == max_steps - 1)
-
-    # Validation
-    if step % 250 == 0 or last_step:
-        model.eval()
-        val_loader.reset()
-        with torch.no_grad():
-            val_loss_accum = torch.tensor(0.0, device=device)
-            val_loss_steps = 20
-            for _ in range(val_loss_steps):
-                x, y = val_loader.next_batch()
-                x, y = x.to(device), y.to(device)
-                # No autocast needed — precision is handled by the custom Linear class.
-                # Weights stay fp32; activations are already in COMPUTE_DTYPE inside the model.
-                logits, loss = model(x, y)
-                val_loss_accum += loss.detach() / val_loss_steps
-        if ddp:
-            dist.all_reduce(val_loss_accum, op=dist.ReduceOp.AVG)
-        if master_process:
-            print(f"validation loss: {val_loss_accum.item():.4f}")
-            with open(log_file, "a") as f:
-                f.write(f"{step} val {val_loss_accum.item():.4f}\n")
-            if step > 0 and (step % 2500 == 0 or last_step):
-                save_checkpoint(
-                    log_dir,
-                    step,
-                    raw_model.state_dict(),
-                    optimizer.state_dict(),
-                    {
-                        "step":               step,
-                        "val_loss":           val_loss_accum.item(),
-                        "smooth_train_loss":  smooth_train_loss,
-                        "dataloader_shard":   train_loader.current_shard,
-                        "dataloader_position":train_loader.current_position,
-                        "model_config": {
-                            "n_layer":    raw_model.config.n_layer,
-                            "n_head":     raw_model.config.n_head,
-                            "n_kv_head":  raw_model.config.n_kv_head,
-                            "n_embd":     raw_model.config.n_embd,
-                            "block_size": raw_model.config.block_size,
-                            "vocab_size": raw_model.config.vocab_size,
-                        },
-                    },
-                    rank=ddp_rank,
-                )
-
-    # Text generation sample
-    if ((step > 0 and step % 250 == 0) or last_step) and not use_compile:
-        model.eval()
-        num_return_sequences = 4
-        max_length = 32
-        tokens = tokenizer.encode("Hello, I'm a language model,")
-        tokens = torch.tensor(tokens, dtype=torch.long)
-        tokens = tokens.unsqueeze(0).repeat(num_return_sequences, 1)
-        xgen = tokens.to(device)
-        sample_rng = torch.Generator(device=device)
-        sample_rng.manual_seed(42 + ddp_rank)
-        while xgen.size(1) < max_length:
-            with torch.no_grad():
-                logits, loss = model(xgen)
-            logits = logits[:, -1, :]
-            probs  = F.softmax(logits, dim=-1)
-            topk_probs, topk_indices = torch.topk(probs, 50, dim=-1)
-            ix   = torch.multinomial(topk_probs, 1, generator=sample_rng)
-            xcol = torch.gather(topk_indices, -1, ix)
-            xgen = torch.cat((xgen, xcol), dim=1)
-        for i in range(num_return_sequences):
-            tokens  = xgen[i, :max_length].tolist()
-            decoded = tokenizer.decode(tokens)
-            print0(f"rank {ddp_rank} sample {i}: {decoded}")
-
-    # Training step
-    model.train()
-
-    # Apply all schedulers before the forward/backward pass.
-    # All groups get the same LR multiplier applied to their individual initial_lr.
-    # Muon groups additionally get updated momentum and weight_decay each step.
-    lrm           = get_lr_multiplier(step)
-    muon_momentum = get_muon_momentum(step)
-    muon_wd       = get_weight_decay(step)
-    for group in optimizer.param_groups:
-        group["lr"] = group["initial_lr"] * lrm
-        if group["kind"] == "muon":
-            group["momentum"]     = muon_momentum
-            group["weight_decay"] = muon_wd
-
-    loss_accum = torch.tensor(0.0, device=device)
-    for micro_step in range(grad_accum_steps):
-        x, y = train_loader.next_batch()
-        x, y = x.to(device), y.to(device)
-        if ddp:
-            # Only sync gradients on the last micro-step — avoids redundant
-            # allreduce communication on every intermediate accumulation step.
-            model.require_backward_grad_sync = (micro_step == grad_accum_steps - 1)
-        # No autocast wrapper needed — the custom Linear class handles dtype casting.
-        logits, loss = model(x, y)
-        loss = loss / grad_accum_steps   # scale for gradient accumulation
-        loss_accum += loss.detach()
-        loss.backward()
-
-    if ddp:
-        dist.all_reduce(loss_accum, op=dist.ReduceOp.AVG)
-
-    # Abort the update if loss is non-finite — prevents corrupt weight updates from
-    # propagating and makes the problem visible immediately rather than steps later.
-    if not torch.isfinite(loss_accum):
-        print(f"[WARNING] Non-finite loss ({loss_accum.item():.4f}) at step {step} — skipping update")
-        model.zero_grad(set_to_none=True)
-        continue
-
-    # Gradient clipping: keeps updates stable if a bad batch causes a spike
-    norm_val = torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
-
-    optimizer.step()
-    model.zero_grad(set_to_none=True)  # free gradient tensors entirely (more efficient than zero-fill)
-
-    if device_type == "cuda":
-        torch.cuda.synchronize()
-    t1 = time.time()
-    dt = t1 - t0
-
-    # EMA smooth loss for cleaner console output (debiased to correct early-step underestimate)
-    smooth_train_loss = 0.9 * smooth_train_loss + 0.1 * loss_accum.item()
-    debiased_loss = smooth_train_loss / (1 - 0.9 ** (step + 1))
-
-    tokens_processed = B * T * grad_accum_steps * ddp_world_size
-    tok_per_sec      = tokens_processed / dt
-    # MFU: fraction of theoretical peak FLOPs actually used (training = ~3× forward FLOPs)
-    flops_per_sec    = flops_per_token * tok_per_sec * 3
-    mfu              = 100 * flops_per_sec / (gpu_peak_flops * ddp_world_size)
-
+    train_loader = DataLoaderLite(B=B, T=T, process_rank=ddp_rank, num_processes=ddp_world_size, split="train", data_root=DATA_DIR)
+    val_loader   = DataLoaderLite(B=B, T=T, process_rank=ddp_rank, num_processes=ddp_world_size, split="val",   data_root=DATA_DIR)
     if master_process:
-        print(
-            f"step {step:5d} | loss: {debiased_loss:.6f} | lrm: {lrm:.4f} | "
-            f"norm: {norm_val:.4f} | dt: {dt*1000:.2f}ms | "
-            f"tok/sec: {tok_per_sec:,.0f} | mfu: {mfu:.2f}%"
+        print(f"found {len(train_loader.shards)} shards for split train")
+        print(f"found {len(val_loader.shards)} shards for split val")
+
+    # ---------------------------------------------------------------------------
+    # Model
+
+    model = GPT(GPTConfig(vocab_size=tokenizer.get_vocab_size()))
+    model.to(device)
+    use_compile = False
+    if use_compile:
+        model = torch.compile(model, dynamic=False)
+    if ddp:
+        model = DDP(model, device_ids=[ddp_local_rank])
+    raw_model = model.module if ddp else model
+
+    # ---------------------------------------------------------------------------
+    # Optimizer
+    # Muon lr is higher than typical AdamW because Polar Express orthogonalised
+    # updates are well-scaled and don't need conservative step sizes.
+    matrix_lr      = 0.02
+    embedding_lr   = 0.001   # wte: sparse updates, lower LR
+    unembedding_lr = 0.004   # lm_head: 4× higher than wte — output projection has larger
+                             # gradient magnitude and needs a faster learning rate to
+                             # converge at the same pace as the embeddings it reads from.
+    scalar_lr      = 0.005
+    weight_decay   = 0.01
+
+    optimizer = raw_model.setup_optimizer(
+        matrix_lr=matrix_lr,
+        embedding_lr=embedding_lr,
+        unembedding_lr=unembedding_lr,
+        scalar_lr=scalar_lr,
+        weight_decay=weight_decay,
+    )
+
+    # ---------------------------------------------------------------------------
+    # LR / momentum / weight-decay schedulers (nanochat-style)
+    #
+    # LR schedule: linear warmup → constant plateau → linear warmdown (trapezoidal).
+    # This replaces the cosine decay used in the original train_gpt2.py.
+    # Trapezoidal schedules often outperform cosine in practice and are simpler
+    # to reason about — the plateau makes it easy to extend training without
+    # recalculating decay curves.
+    #
+    # Muon momentum schedule:
+    #   Warms from 0.85 → 0.97 in the first 400 steps (avoids overshooting early)
+    #   Warms down to 0.90 during the LR warmdown phase (reduces oscillation at end)
+    #
+    # Weight decay schedule:
+    #   Cosine decay from weight_decay → 0 over the full run.
+    #   Decaying weight decay prevents the regularization from under-fitting at the
+    #   end of training when the model is already well-converged.
+    #
+    # All param groups carry 'initial_lr'; the scheduler multiplies uniformly:
+    #   group["lr"] = group["initial_lr"] * lr_multiplier
+
+    max_steps      = 19073   # ~1 epoch on 10B token dataset with 0.5M token batches
+    warmup_steps   = 715
+    warmdown_ratio = 0.65    # fraction of max_steps spent in warmdown
+    final_lr_frac  = 0.1     # minimum LR as a fraction of peak LR
+
+    def get_lr_multiplier(it: int) -> float:
+        """Trapezoidal LR schedule: warmup → 1.0 → warmdown to final_lr_frac."""
+        warmdown_iters = round(warmdown_ratio * max_steps)
+        if it < warmup_steps:
+            return (it + 1) / warmup_steps
+        elif it <= max_steps - warmdown_iters:
+            return 1.0
+        else:
+            progress = (max_steps - it) / warmdown_iters
+            return progress + (1 - progress) * final_lr_frac
+
+    def get_muon_momentum(it: int) -> float:
+        """
+        Muon momentum schedule.
+        Warm-up to 0.97 in first 400 steps, stable plateau, then warm-down to 0.90.
+        """
+        warmdown_iters = round(warmdown_ratio * max_steps)
+        warmdown_start = max_steps - warmdown_iters
+        if it < 400:
+            frac = it / 400
+            return (1 - frac) * 0.85 + frac * 0.97
+        elif it >= warmdown_start:
+            progress = (it - warmdown_start) / warmdown_iters
+            return 0.97 * (1 - progress) + 0.90 * progress
+        return 0.97
+
+    def get_weight_decay(it: int) -> float:
+        """Cosine decay of weight_decay from its initial value to zero."""
+        return weight_decay * 0.5 * (1 + math.cos(math.pi * it / max_steps))
+
+    # ---------------------------------------------------------------------------
+    # MFU setup
+
+    num_params      = sum(p.numel() for p in raw_model.parameters())
+    flops_per_token = raw_model.estimate_flops()
+    if device_type == "cuda":
+        gpu_peak_flops = get_peak_flops(torch.cuda.get_device_name(0))
+        print0(f"GPU: {torch.cuda.get_device_name(0)} | Peak FLOPS (BF16): {gpu_peak_flops:.2e}")
+    else:
+        gpu_peak_flops = float("inf")  # MFU not meaningful on CPU/MPS
+    print0(f"Parameters: {num_params:,} | Est. FLOPs/token: {flops_per_token:.2e}")
+
+    # ---------------------------------------------------------------------------
+    # Training loop
+
+    log_dir  = "log"
+    os.makedirs(log_dir, exist_ok=True)
+    log_file = os.path.join(log_dir, "log.txt")
+
+    # ---------------------------------------------------------------------------
+    # Resume from checkpoint if one exists
+    start_step        = 0
+    smooth_train_loss = 0.0
+
+    try:
+        resume_step = find_last_step(log_dir)
+    except (FileNotFoundError, ValueError):
+        resume_step = None
+    if resume_step is not None:
+        print0(f"Found checkpoint at step {resume_step} — resuming...")
+        # All ranks load rank-0's optimizer — in DDP, optimizer states are
+        # identical across ranks (same averaged gradients → same updates).
+        model_data, optim_data, meta = load_checkpoint(
+            log_dir, resume_step, device, load_optimizer=True, rank=0
         )
-        with open(log_file, "a") as f:
-            f.write(f"{step} train {loss_accum.item():.6f}\n")
+        raw_model.load_state_dict(model_data)
+        optimizer.load_state_dict(optim_data)
+        start_step        = meta["step"]
+        smooth_train_loss = meta.get("smooth_train_loss", 0.0)
+        # Restore data loader to exact position it was at when checkpoint was saved
+        dl_shard = meta.get("dataloader_shard", 0)
+        dl_pos   = meta.get("dataloader_position", 0)
+        train_loader.current_shard    = dl_shard
+        train_loader.tokens           = load_tokens(train_loader.shards[dl_shard])
+        train_loader.current_position = dl_pos
+        print0(f"Resumed from step {start_step} | shard {dl_shard} | position {dl_pos:,}")
 
-    # GC management (from nanochat):
-    # After the first step, freeze all surviving objects so the GC never has to
-    # scan them again, then disable the GC entirely for the hot training path.
-    # This avoids ~500ms GC pauses that can occur during long runs.
-    # Every 5000 steps we manually collect to catch any lingering cycles.
-    if step == 0:
-        gc.collect()
-        gc.freeze()
-        gc.disable()
-    elif step % 5000 == 0:
-        gc.collect()
+    # Append to existing log if resuming; otherwise start fresh
+    with open(log_file, "a" if start_step > 0 else "w") as f:
+        pass
 
-compute_cleanup()
+    for step in range(start_step, max_steps):
+        t0 = time.time()
+        last_step = (step == max_steps - 1)
+
+        # Validation
+        if step % 250 == 0 or last_step:
+            model.eval()
+            val_loader.reset()
+            with torch.no_grad():
+                val_loss_accum = torch.tensor(0.0, device=device)
+                val_loss_steps = 20
+                for _ in range(val_loss_steps):
+                    x, y = val_loader.next_batch()
+                    x, y = x.to(device), y.to(device)
+                    # No autocast needed — precision is handled by the custom Linear class.
+                    # Weights stay fp32; activations are already in COMPUTE_DTYPE inside the model.
+                    logits, loss = model(x, y)
+                    val_loss_accum += loss.detach() / val_loss_steps
+            if ddp:
+                dist.all_reduce(val_loss_accum, op=dist.ReduceOp.AVG)
+            if master_process:
+                print(f"validation loss: {val_loss_accum.item():.4f}")
+                with open(log_file, "a") as f:
+                    f.write(f"{step} val {val_loss_accum.item():.4f}\n")
+                if step > 0 and (step % 2500 == 0 or last_step):
+                    save_checkpoint(
+                        log_dir,
+                        step,
+                        raw_model.state_dict(),
+                        optimizer.state_dict(),
+                        {
+                            "step":               step,
+                            "val_loss":           val_loss_accum.item(),
+                            "smooth_train_loss":  smooth_train_loss,
+                            "dataloader_shard":   train_loader.current_shard,
+                            "dataloader_position":train_loader.current_position,
+                            "model_config": {
+                                "n_layer":    raw_model.config.n_layer,
+                                "n_head":     raw_model.config.n_head,
+                                "n_kv_head":  raw_model.config.n_kv_head,
+                                "n_embd":     raw_model.config.n_embd,
+                                "block_size": raw_model.config.block_size,
+                                "vocab_size": raw_model.config.vocab_size,
+                            },
+                        },
+                        rank=ddp_rank,
+                    )
+
+        # Text generation sample
+        if ((step > 0 and step % 250 == 0) or last_step) and not use_compile:
+            model.eval()
+            num_return_sequences = 4
+            max_length = 32
+            tokens = tokenizer.encode("Hello, I'm a language model,")
+            tokens = torch.tensor(tokens, dtype=torch.long)
+            tokens = tokens.unsqueeze(0).repeat(num_return_sequences, 1)
+            xgen = tokens.to(device)
+            sample_rng = torch.Generator(device=device)
+            sample_rng.manual_seed(42 + ddp_rank)
+            while xgen.size(1) < max_length:
+                with torch.no_grad():
+                    logits, loss = model(xgen)
+                logits = logits[:, -1, :]
+                probs  = F.softmax(logits, dim=-1)
+                topk_probs, topk_indices = torch.topk(probs, 50, dim=-1)
+                ix   = torch.multinomial(topk_probs, 1, generator=sample_rng)
+                xcol = torch.gather(topk_indices, -1, ix)
+                xgen = torch.cat((xgen, xcol), dim=1)
+            for i in range(num_return_sequences):
+                tokens  = xgen[i, :max_length].tolist()
+                decoded = tokenizer.decode(tokens)
+                print0(f"rank {ddp_rank} sample {i}: {decoded}")
+
+        # Training step
+        model.train()
+
+        # Apply all schedulers before the forward/backward pass.
+        # All groups get the same LR multiplier applied to their individual initial_lr.
+        # Muon groups additionally get updated momentum and weight_decay each step.
+        lrm           = get_lr_multiplier(step)
+        muon_momentum = get_muon_momentum(step)
+        muon_wd       = get_weight_decay(step)
+        for group in optimizer.param_groups:
+            group["lr"] = group["initial_lr"] * lrm
+            if group["kind"] == "muon":
+                group["momentum"]     = muon_momentum
+                group["weight_decay"] = muon_wd
+
+        loss_accum = torch.tensor(0.0, device=device)
+        for micro_step in range(grad_accum_steps):
+            x, y = train_loader.next_batch()
+            x, y = x.to(device), y.to(device)
+            if ddp:
+                # Only sync gradients on the last micro-step — avoids redundant
+                # allreduce communication on every intermediate accumulation step.
+                model.require_backward_grad_sync = (micro_step == grad_accum_steps - 1)
+            # No autocast wrapper needed — the custom Linear class handles dtype casting.
+            logits, loss = model(x, y)
+            loss = loss / grad_accum_steps   # scale for gradient accumulation
+            loss_accum += loss.detach()
+            loss.backward()
+
+        if ddp:
+            dist.all_reduce(loss_accum, op=dist.ReduceOp.AVG)
+
+        # Abort the update if loss is non-finite — prevents corrupt weight updates from
+        # propagating and makes the problem visible immediately rather than steps later.
+        if not torch.isfinite(loss_accum):
+            print(f"[WARNING] Non-finite loss ({loss_accum.item():.4f}) at step {step} — skipping update")
+            model.zero_grad(set_to_none=True)
+            continue
+
+        # Gradient clipping: keeps updates stable if a bad batch causes a spike
+        norm_val = torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+
+        optimizer.step()
+        model.zero_grad(set_to_none=True)  # free gradient tensors entirely (more efficient than zero-fill)
+
+        if device_type == "cuda":
+            torch.cuda.synchronize()
+        t1 = time.time()
+        dt = t1 - t0
+
+        # EMA smooth loss for cleaner console output (debiased to correct early-step underestimate)
+        smooth_train_loss = 0.9 * smooth_train_loss + 0.1 * loss_accum.item()
+        debiased_loss = smooth_train_loss / (1 - 0.9 ** (step + 1))
+
+        tokens_processed = B * T * grad_accum_steps * ddp_world_size
+        tok_per_sec      = tokens_processed / dt
+        # MFU: fraction of theoretical peak FLOPs actually used (training = ~3× forward FLOPs)
+        flops_per_sec    = flops_per_token * tok_per_sec * 3
+        mfu              = 100 * flops_per_sec / (gpu_peak_flops * ddp_world_size)
+
+        if master_process:
+            print(
+                f"step {step:5d} | loss: {debiased_loss:.6f} | lrm: {lrm:.4f} | "
+                f"norm: {norm_val:.4f} | dt: {dt*1000:.2f}ms | "
+                f"tok/sec: {tok_per_sec:,.0f} | mfu: {mfu:.2f}%"
+            )
+            with open(log_file, "a") as f:
+                f.write(f"{step} train {loss_accum.item():.6f}\n")
+
+        # GC management (from nanochat):
+        # After the first step, freeze all surviving objects so the GC never has to
+        # scan them again, then disable the GC entirely for the hot training path.
+        # This avoids ~500ms GC pauses that can occur during long runs.
+        # Every 5000 steps we manually collect to catch any lingering cycles.
+        if step == 0:
+            gc.collect()
+            gc.freeze()
+            gc.disable()
+        elif step % 5000 == 0:
+            gc.collect()
+
+    compute_cleanup()

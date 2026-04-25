@@ -101,7 +101,7 @@ def build_model(checkpoint_dir, step, device, phase):
     with torch.device("meta"):
         model = GPT(model_config)
     model.to_empty(device=device)
-    model.init_weights()  # initialises rotary embeddings; state_dict will overwrite learned params
+    model._init_all_weights()  # initialises rotary embeddings; state_dict will overwrite learned params
     model.load_state_dict(model_data, strict=True, assign=True)
     model.eval() if phase == "eval" else model.train()
     return model, meta_data

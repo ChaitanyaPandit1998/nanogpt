@@ -396,13 +396,25 @@ for step in range(num_steps + 1):
         # Only sync gradients on the last accumulation step in DDP
         if ddp:
             model.require_backward_grad_sync = (micro == args.grad_accum - 1)
+
+        # Skip all-masked batches before forward pass — F.cross_entropy returns NaN
+        # when every target is IGNORE_IDX (-100), because it computes 0/0 = NaN.
+        valid_tokens = (y != IGNORE_IDX).sum().item()
+        if valid_tokens == 0:
+            print0(f"[WARNING] All-masked batch at step {step} micro {micro} — skipping")
+            nan_in_micro = True
+            x, y = next(train_loader)
+            break
+
         _, loss = model(x, y)
         # Check BEFORE backward — a NaN loss would write NaN gradients that
         # contaminate all subsequent micro-steps even if their loss is finite.
         if not torch.isfinite(loss):
-            print0(f"[WARNING] NaN loss in micro-step {micro} at step {step} — skipping batch")
+            print0(f"[WARNING] NaN loss at step {step} micro {micro} | "
+                   f"valid_tokens={valid_tokens} | "
+                   f"y_min={y.min().item()} y_max={y.max().item()} — skipping batch")
             nan_in_micro = True
-            x, y = next(train_loader)  # advance past the bad batch so we don't retry it
+            x, y = next(train_loader)
             break
         (loss / args.grad_accum).backward()
         x, y = next(train_loader)

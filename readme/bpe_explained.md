@@ -227,11 +227,11 @@ practical training tokens ≈ 100–150 × model_params
 | Model | Params | Training tokens | Ratio |
 |---|---|---|---|
 | Chinchilla optimal | any | 20× params | 20× |
-| **blk-gpt** | 176M | ~18B | **~100×** |
+| **blk-gpt** | 176M | ~10B | **~57×** |
 | LLaMA 1 (7B) | 7B | 1T | ~143× |
 | LLaMA 3 (8B) | 8B | 15T | ~1,875× |
 
-blk-gpt is trained at ~100× — matching the LLaMA philosophy: a small model used many times at inference benefits from being "overtrained" relative to Chinchilla.
+blk-gpt is trained at ~57× — roughly 3× more than Chinchilla-optimal. Still in the "overtrained" territory where the model is better for inference at the cost of extra compute.
 
 ---
 
@@ -245,7 +245,7 @@ avg appearances per token = training_tokens / vocab_size
 
 | Model | Training tokens | Vocab | Avg per token |
 |---|---|---|---|
-| **blk-gpt** | 18B | 32K | ~562,000 ✅ |
+| **blk-gpt** | 10B | 32K | ~312,000 ✅ |
 | GPT-2 | 300B | 50K | ~6,000,000 ✅ |
 | Undertrained example | 1B | 100K | ~10,000 ⚠️ |
 
@@ -262,9 +262,9 @@ Vocab = 32,768
 
 Model = 176M params
   ├── Chinchilla optimal: 20 × 176M = 3.5B tokens
-  └── Our choice: 18B tokens = ~100× params  (inference-optimal)
+  └── Our choice: 10B tokens = ~57× params  (overtrained vs Chinchilla)
 
-Training = 18B tokens
-  ├── Covers full FineWeb-Edu 10BT sample
-  └── Each of 32K vocab tokens seen ~562K times on average
+Training = 10B tokens  (19,073 steps × 524,288 tokens/step)
+  ├── One epoch over FineWeb-Edu 10BT sample
+  └── Each of 32K vocab tokens seen ~312K times on average
 ```

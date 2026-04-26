@@ -173,3 +173,98 @@ The real factors that push vocabulary size up are:
 > **Use the smallest vocabulary that gives good compression for your training data and target domains.**
 
 For English-only educational text (FineWeb-Edu + SmolTalk), 32K is the right choice. Even if blk-gpt were scaled to 1B parameters with the same data, 32K would still be appropriate — the vocabulary reflects the **data diversity**, not the model size.
+
+---
+
+## The Triangle: Vocabulary × Model Size × Training Tokens
+
+These three quantities constrain each other through two well-studied relationships:
+
+```
+    Vocabulary Size
+          ▲
+          │  Embedding cost
+          │  (vocab × n_embd × 2)
+          │
+    Model Params ──────────────────── Training Tokens
+                   Chinchilla / LLaMA scaling laws
+                   (tokens ≈ N × model_params)
+```
+
+---
+
+### Relationship 1 — Vocabulary × Model Size (Embedding Cost)
+
+The embedding table consumes a fixed chunk of the parameter budget:
+
+```
+Embedding params = vocab_size × n_embd × 2  (wte + lm_head, untied)
+```
+
+| Model | Vocab | n_embd | Embedding params | Total params | Embedding % |
+|---|---|---|---|---|---|
+| **blk-gpt** | 32K | 768 | ~50M | 176M | **28%** |
+| GPT-2 Large | 50K | 1,280 | ~128M | 774M | 17% |
+| LLaMA 3 8B | 128K | 4,096 | ~1B | 8B | 13% |
+| GPT-3 | 50K | 12,288 | ~1.2B | 175B | 0.7% |
+
+**Rule of thumb:** Embedding should be ≤20% of total params. This sets a natural ceiling on vocabulary for a given model size.
+
+---
+
+### Relationship 2 — Model Size × Training Tokens (Scaling Laws)
+
+**Chinchilla (2022)** — compute-optimal training:
+```
+optimal training tokens ≈ 20 × model_params
+```
+
+**LLaMA / inference-optimal** — train longer for a better deployed model:
+```
+practical training tokens ≈ 100–150 × model_params
+```
+
+| Model | Params | Training tokens | Ratio |
+|---|---|---|---|
+| Chinchilla optimal | any | 20× params | 20× |
+| **blk-gpt** | 176M | ~18B | **~100×** |
+| LLaMA 1 (7B) | 7B | 1T | ~143× |
+| LLaMA 3 (8B) | 8B | 15T | ~1,875× |
+
+blk-gpt is trained at ~100× — matching the LLaMA philosophy: a small model used many times at inference benefits from being "overtrained" relative to Chinchilla.
+
+---
+
+### Relationship 3 — Vocabulary × Training Tokens (Token Coverage)
+
+Each token in the vocabulary needs to be seen enough times during training for its embedding to be well-learned:
+
+```
+avg appearances per token = training_tokens / vocab_size
+```
+
+| Model | Training tokens | Vocab | Avg per token |
+|---|---|---|---|
+| **blk-gpt** | 18B | 32K | ~562,000 ✅ |
+| GPT-2 | 300B | 50K | ~6,000,000 ✅ |
+| Undertrained example | 1B | 100K | ~10,000 ⚠️ |
+
+**Rule of thumb:** Each token should appear at least ~10,000–100,000 times. If `training_tokens / vocab_size` is too small, rare tokens will have poorly-learned embeddings.
+
+---
+
+### blk-gpt by the numbers
+
+```
+Vocab = 32,768
+  ├── Embedding cost: 32K × 768 × 2 = 50M  (28% of 176M — acceptable)
+  └── Token coverage: 18B / 32K = 562K avg appearances — well-learned
+
+Model = 176M params
+  ├── Chinchilla optimal: 20 × 176M = 3.5B tokens
+  └── Our choice: 18B tokens = ~100× params  (inference-optimal)
+
+Training = 18B tokens
+  ├── Covers full FineWeb-Edu 10BT sample
+  └── Each of 32K vocab tokens seen ~562K times on average
+```

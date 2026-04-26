@@ -396,7 +396,7 @@ class RustBPETokenizer:
         return ids
 
 # -----------------------------------------------------------------------------
-# blk-gpt convenience functions (path-argument versions, no get_base_dir dependency)
+# nanogpt convenience functions (path-argument versions, no get_base_dir dependency)
 
 def get_tokenizer(tokenizer_dir: str = "tokenizer") -> RustBPETokenizer:
     """Load the trained RustBPETokenizer from tokenizer_dir/tokenizer.pkl."""

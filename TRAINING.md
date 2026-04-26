@@ -1,4 +1,4 @@
-# blk-gpt: Training & Evaluation Pipeline
+# nanogpt: Training & Evaluation Pipeline
 
 Step-by-step guide to go from raw data to a fine-tuned model.
 
@@ -146,7 +146,7 @@ python train_gpt.py --data-dir /workspace/edu_fineweb10B
 ```
 
 Checkpoints and logs write to `log/` relative to wherever you run the command.
-Run from `/workspace/blk-gpt/` so everything lands on the network volume.
+Run from `/workspace/nanogpt/` so everything lands on the network volume.
 
 What happens automatically during training:
 

@@ -1,7 +1,7 @@
 """
 chat_cli.py
 ~~~~~~~~~~~
-Interactive terminal chat with a trained blk-gpt model.
+Interactive terminal chat with a trained nanogpt model.
 Ported from nanochat/scripts/chat_cli.py.
 
 Uses the same custom BPE tokenizer (RustBPETokenizer) and special tokens as
@@ -22,7 +22,7 @@ from tokenizer import get_tokenizer
 # ---------------------------------------------------------------------------
 # CLI
 
-parser = argparse.ArgumentParser(description="Chat with a trained blk-gpt model")
+parser = argparse.ArgumentParser(description="Chat with a trained nanogpt model")
 parser.add_argument("--model-dir",    type=str, required=True, help="Checkpoint directory (log/ or sft_checkpoints/)")
 parser.add_argument("--step",         type=int, default=None,  help="Checkpoint step to load (default: last)")
 parser.add_argument("--prompt",       type=str, default="",    help="One-shot prompt: print one response and exit")
@@ -57,7 +57,7 @@ assistant_end   = tokenizer.encode_special("<|assistant_end|>")
 # ---------------------------------------------------------------------------
 # REPL
 
-print("\nblk-gpt Chat")
+print("\nnanogpt Chat")
 print("-" * 50)
 print("Type 'quit' or 'exit' to end   |   'clear' to reset conversation")
 print("-" * 50)

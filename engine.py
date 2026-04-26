@@ -1,7 +1,7 @@
 """
 engine.py
 ~~~~~~~~~
-KV-cached inference engine for blk-gpt.
+KV-cached inference engine for nanogpt.
 Ported from nanochat/nanochat/engine.py — tool-use state machine removed.
 
 Usage:

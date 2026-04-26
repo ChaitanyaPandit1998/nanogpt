@@ -1,6 +1,6 @@
 # Byte Pair Encoding (BPE) — How It Works
 
-A plain-English explanation of the tokenizer used in blk-gpt, trained by `tok_train.py` using `rustbpe`.
+A plain-English explanation of the tokenizer used in nanogpt, trained by `tok_train.py` using `rustbpe`.
 
 ---
 
@@ -142,7 +142,7 @@ For reference: GPT-2 uses 50,257 tokens; GPT-4 uses 100,277 tokens (covering man
 ```
 Embedding parameters = vocab_size × n_embd × 2  (wte + lm_head, untied)
 
-blk-gpt (124M):  32K × 768 × 2  = ~50M params = 40% of the whole model
+nanogpt (124M):  32K × 768 × 2  = ~50M params = 40% of the whole model
 GPT-3 (175B):    50K × 12,288 × 2 = ~1.2B params = 0.7% of the whole model
 ```
 
@@ -166,13 +166,13 @@ The real factors that push vocabulary size up are:
 | LLaMA 1 & 2 | 7B–70B | 32K | English-focused; same as our model |
 | LLaMA 3 | 8B–70B | 128K | Added multilingual support — not model size |
 | GPT-2 | 124M–1.5B | 50K | General-purpose English |
-| blk-gpt | 124M | 32K | Narrow domain (FineWeb-Edu, English only) |
+| nanogpt | 124M | 32K | Narrow domain (FineWeb-Edu, English only) |
 
 ### The practical rule
 
 > **Use the smallest vocabulary that gives good compression for your training data and target domains.**
 
-For English-only educational text (FineWeb-Edu + SmolTalk), 32K is the right choice. Even if blk-gpt were scaled to 1B parameters with the same data, 32K would still be appropriate — the vocabulary reflects the **data diversity**, not the model size.
+For English-only educational text (FineWeb-Edu + SmolTalk), 32K is the right choice. Even if nanogpt were scaled to 1B parameters with the same data, 32K would still be appropriate — the vocabulary reflects the **data diversity**, not the model size.
 
 ---
 
@@ -203,7 +203,7 @@ Embedding params = vocab_size × n_embd × 2  (wte + lm_head, untied)
 
 | Model | Vocab | n_embd | Embedding params | Total params | Embedding % |
 |---|---|---|---|---|---|
-| **blk-gpt** | 32K | 768 | ~50M | 176M | **28%** |
+| **nanogpt** | 32K | 768 | ~50M | 176M | **28%** |
 | GPT-2 Large | 50K | 1,280 | ~128M | 774M | 17% |
 | LLaMA 3 8B | 128K | 4,096 | ~1B | 8B | 13% |
 | GPT-3 | 50K | 12,288 | ~1.2B | 175B | 0.7% |
@@ -227,11 +227,11 @@ practical training tokens ≈ 100–150 × model_params
 | Model | Params | Training tokens | Ratio |
 |---|---|---|---|
 | Chinchilla optimal | any | 20× params | 20× |
-| **blk-gpt** | 176M | ~10B | **~57×** |
+| **nanogpt** | 176M | ~10B | **~57×** |
 | LLaMA 1 (7B) | 7B | 1T | ~143× |
 | LLaMA 3 (8B) | 8B | 15T | ~1,875× |
 
-blk-gpt is trained at ~57× — roughly 3× more than Chinchilla-optimal. Still in the "overtrained" territory where the model is better for inference at the cost of extra compute.
+nanogpt is trained at ~57× — roughly 3× more than Chinchilla-optimal. Still in the "overtrained" territory where the model is better for inference at the cost of extra compute.
 
 ---
 
@@ -245,7 +245,7 @@ avg appearances per token = training_tokens / vocab_size
 
 | Model | Training tokens | Vocab | Avg per token |
 |---|---|---|---|
-| **blk-gpt** | 10B | 32K | ~312,000 ✅ |
+| **nanogpt** | 10B | 32K | ~312,000 ✅ |
 | GPT-2 | 300B | 50K | ~6,000,000 ✅ |
 | Undertrained example | 1B | 100K | ~10,000 ⚠️ |
 
@@ -253,7 +253,7 @@ avg appearances per token = training_tokens / vocab_size
 
 ---
 
-### blk-gpt by the numbers
+### nanogpt by the numbers
 
 ```
 Vocab = 32,768

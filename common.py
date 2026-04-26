@@ -1,5 +1,5 @@
 """
-Common utilities for blk-gpt.
+Common utilities for nanogpt.
 Adapted from nanochat/nanochat/common.py.
 """
 

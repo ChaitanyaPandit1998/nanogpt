@@ -1,4 +1,4 @@
-# BLK-GPT — Modern GPT Training
+# nanogpt — Modern GPT Training
 
 A GPT-2 baseline upgraded with a suite of modern architecture improvements, built on top of Karpathy's [build-nanogpt](https://github.com/karpathy/build-nanogpt). Trains on the [FineWeb-Edu 10B](https://huggingface.co/datasets/HuggingFaceFW/fineweb-edu) dataset with a custom BPE tokenizer.
 

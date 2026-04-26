@@ -1,6 +1,6 @@
-# Model Comparison — blk-gpt vs Industry Baselines
+# Model Comparison — nanogpt vs Industry Baselines
 
-All figures from public papers and announcements. blk-gpt figures from this repository.
+All figures from public papers and announcements. nanogpt figures from this repository.
 
 ---
 
@@ -8,7 +8,7 @@ All figures from public papers and announcements. blk-gpt figures from this repo
 
 | Model | Year | Params | Vocab | Training Tokens | Context | Tokens / Params |
 |---|---|---|---|---|---|---|
-| **blk-gpt** | 2026 | 176M | 32K | 10B | 1,024 | ~57× |
+| **nanogpt** | 2026 | 176M | 32K | 10B | 1,024 | ~57× |
 | GPT-2 | 2019 | 124M | 50K | ~40B | 1,024 | ~323× |
 | GPT-2 XL | 2019 | 1.5B | 50K | ~40B | 1,024 | ~27× |
 | GPT-3 | 2020 | 175B | 50K | 300B | 2,048 | ~1.7× |
@@ -27,7 +27,7 @@ All figures from public papers and announcements. blk-gpt figures from this repo
 
 | Model | Positional Encoding | Norm | Attention | Activation | Special |
 |---|---|---|---|---|---|
-| **blk-gpt** | RoPE (base 100K) | RMSNorm | GQA + QK-Norm + sliding window | ReLU² | Muon optimizer, smear gate, value embeddings |
+| **nanogpt** | RoPE (base 100K) | RMSNorm | GQA + QK-Norm + sliding window | ReLU² | Muon optimizer, smear gate, value embeddings |
 | GPT-2 | Learned | LayerNorm | Full MHA | GELU | — |
 | GPT-3 | Learned | LayerNorm | Full MHA (alternating dense/sparse) | GELU | Sparse attention layers |
 | Chinchilla | Learned | LayerNorm | Full MHA | GELU | — |
@@ -42,7 +42,7 @@ All figures from public papers and announcements. blk-gpt figures from this repo
 
 | Model | Optimizer | Dataset | Dataset Size |
 |---|---|---|---|
-| **blk-gpt** | Muon + AdamW | FineWeb-Edu 10BT | 10B tokens |
+| **nanogpt** | Muon + AdamW | FineWeb-Edu 10BT | 10B tokens |
 | GPT-2 | Adam | WebText | ~40B tokens |
 | GPT-3 | Adam | CommonCrawl + WebText2 + Books + Wikipedia | 300B tokens |
 | Chinchilla | AdamW | MassiveText | 1.4T tokens |
@@ -59,7 +59,7 @@ All figures from public papers and announcements. blk-gpt figures from this repo
 |---|---|---|
 | GPT-3 | 1.7× Chinchilla | Heavily undertrained — too few tokens for model size |
 | **Chinchilla** | **20× (compute-optimal)** | **The theoretical sweet spot for training compute** |
-| **blk-gpt** | **57×** | Overtrained vs Chinchilla — good for inference efficiency |
+| **nanogpt** | **57×** | Overtrained vs Chinchilla — good for inference efficiency |
 | LLaMA 1 | 143× | "Train smaller models longer" philosophy |
 | LLaMA 2 | 286× | Pushed further — better for deployment |
 | LLaMA 3 | 1,875× | Extremely overtrained — best per-inference-compute model |
@@ -73,18 +73,18 @@ The trend is clear: the industry has moved from compute-optimal (Chinchilla) tow
 | Model | Vocab | Bytes/token (English) | Notes |
 |---|---|---|---|
 | GPT-2 / GPT-3 | 50K | ~4.0 | General English, good compression |
-| **blk-gpt** | 32K | ~4.4 | Educational English, slightly less efficient |
+| **nanogpt** | 32K | ~4.4 | Educational English, slightly less efficient |
 | LLaMA 1/2 | 32K | ~4.0 | Similar to GPT-2 in practice |
 | LLaMA 3 | 128K | ~5.0 | Much better multilingual + code compression |
 | GPT-4 | 100K | ~4.8 | Strong multilingual coverage |
 
 ---
 
-## What Makes blk-gpt Different
+## What Makes nanogpt Different
 
-blk-gpt is a **research/educational project** at the 124M–176M scale. It is not designed to compete with production models — it is designed to explore modern architecture improvements on a manageable budget:
+nanogpt is a **research/educational project** at the 124M–176M scale. It is not designed to compete with production models — it is designed to explore modern architecture improvements on a manageable budget:
 
-| Feature | blk-gpt | GPT-2 (comparable size) |
+| Feature | nanogpt | GPT-2 (comparable size) |
 |---|---|---|
 | Positional encoding | RoPE | Learned (worse at long contexts) |
 | Normalisation | RMSNorm | LayerNorm |
@@ -96,4 +96,4 @@ blk-gpt is a **research/educational project** at the 124M–176M scale. It is no
 | Value embeddings | ✅ | ❌ |
 | Custom tokenizer | ✅ domain-matched 32K | GPT-2 general 50K |
 
-Despite having similar parameter counts, blk-gpt incorporates architecture ideas from 2023–2024 that GPT-2 predates by 4–5 years.
+Despite having similar parameter counts, nanogpt incorporates architecture ideas from 2023–2024 that GPT-2 predates by 4–5 years.

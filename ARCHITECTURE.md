@@ -1,4 +1,4 @@
-# blk-gpt — Architecture & Pipeline
+# nanogpt — Architecture & Pipeline
 
 End-to-end diagram of every script, where it runs, what it depends on, and what it produces.
 

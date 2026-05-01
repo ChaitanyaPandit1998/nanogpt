@@ -1,8 +1,8 @@
 # nanogpt 2.0 — Budget Plan (Under $300)
 
 > A trimmed-down version of [PLAN_v2.md](PLAN_v2.md) that delivers a finance-capable model
-> within a $300 RunPod budget. The approach: smaller model, fewer data sources,
-> simpler SFT pipeline — without sacrificing the core finance domain capability.
+> within a ~$300 RunPod budget. The approach: smaller model, fewer data sources,
+> reasoning-first SFT — without sacrificing the core finance domain capability.
 
 ---
 
@@ -11,11 +11,11 @@
 | Decision | Full Plan | Budget Plan | Why |
 |---|---|---|---|
 | Model params | ~470M | **~250M** | Fewer layers = faster steps |
-| Context length | 4,096 | **2,048** | 2× cheaper attention than 4096; still 2× better than current |
+| Context length | 4,096 | **2,048** | 2× cheaper attention; still 2× better than current |
 | Training tokens | ~47B | **~35B** | Fits in the pretraining time budget |
 | Data sources | 6 | **3** | Drop EDGAR (overlaps SEC), Reuters (too small), Earnings (nice-to-have) |
 | Tokenizer retrain | Yes | **Yes (keep it)** | Cost is ~$1; worth it for 26% finance data |
-| SFT data | Finance-Instruct-500k + FinCoT + SmolTalk | **Finance-Alpaca + SmolTalk** | Finance-Alpaca is clean, MIT licensed, no contamination filtering needed |
+| SFT data | Finance-Instruct-500k + FinCoT + SmolTalk | **FinCoT + generated CoT + SmolTalk** | Reasoning-first strategy (see section below) |
 
 ---
 
@@ -28,9 +28,12 @@ RunPod pricing: **$4.00/GPU/hr for H100 SXM**
 | Tokenizer retrain | 1× H100 | ~5 min | ~$0.30 |
 | Data tokenize — 3 sources | 1× H100 | ~4 hours | ~$16 |
 | **Pretraining — 35B tokens** | **4× H100** | **~15–17 hours** | **~$240–$272** |
+| Generate CoT data via API | External API | — | ~$10–20 |
 | SFT | 1× H100 | ~2 hours | ~$8 |
 | Evaluation | 1× H100 | ~1 hour | ~$4 |
-| **Total** | | **~22–25 hours** | **~$268–$300** |
+| **Total** | | **~22–25 hours active** | **~$278–$320** |
+
+> To stay strictly under $300: use GPT-4o mini for CoT generation (~$10) and generate ~5K examples instead of 10K.
 
 ---
 
@@ -38,7 +41,7 @@ RunPod pricing: **$4.00/GPU/hr for H100 SXM**
 
 ### Why 250M and not 176M or 500M?
 
-- **176M (current)**: Proven but undertrained on finance — the architecture is the same, just needs more layers and finance data.
+- **176M (current)**: Proven but undertrained on finance — same architecture, just needs more layers and finance data.
 - **250M (budget target)**: Add 8 transformer layers to the existing architecture. Same hidden dimension (768), so all existing model code is unchanged. Just a larger, deeper version of what we already have.
 - **500M (full plan)**: Needs wider hidden dim (1024), more memory per step, costs ~4× more.
 
@@ -70,7 +73,7 @@ Budget:   (10.5M × 20) + 50M  =  210M + 50M  =  260M  ≈ 250M
 Full:     (varies  × 32) + 67M              ≈  470M
 ```
 
-The per-layer cost of 10.5M is derived from the actual current model (176M total, 50M embedding → 126M / 12 layers = 10.5M/layer). This accounts for attention, FFN, value embeddings, smear gate, QK norm, and RMSNorm — all the architectural additions beyond vanilla GPT-2.
+The per-layer cost of 10.5M is derived from the actual current model (176M total, 50M embedding → 126M / 12 layers = 10.5M/layer). Includes attention, FFN, value embeddings, smear gate, QK norm, and RMSNorm.
 
 ### Why context = 2048 (not 4096)?
 
@@ -79,8 +82,6 @@ The per-layer cost of 10.5M is derived from the actual current model (176M total
 | 1024 (current) | 1× | Cuts off mid-paragraph in most SEC sections |
 | **2048 (budget)** | **~1.25× (with SSSL)** | **Covers full short SEC sections and news articles** |
 | 4096 (full plan) | ~1.75× (with SSSL) | Covers full MD&A sections and long transcripts |
-
-2048 is a good middle ground: meaningful improvement over 1024 for financial text, at roughly 25% more attention compute (SSSL sliding window limits the quadratic growth).
 
 ---
 
@@ -99,21 +100,28 @@ The per-layer cost of 10.5M is derived from the actual current model (176M total
 
 | Dropped source | Reason |
 |---|---|
-| EDGAR-Corpus | Overlaps heavily with PleIAs/SEC (same EDGAR filings); deduplication work not worth it at this budget |
-| Reuters Financial News | Only ~116M tokens — too small to meaningfully impact a 35B token run (0.3% diluted to near-zero) |
-| S&P 500 Earnings Transcripts | ~500M tokens — useful but not essential; spoken language can be learned from OpenHermes + SEC prose |
+| EDGAR-Corpus | Overlaps heavily with PleIAs/SEC; deduplication work not worth it at this budget |
+| Reuters Financial News | Only ~116M tokens — too small to meaningfully impact a 35B token run |
+| S&P 500 Earnings Transcripts | ~500M tokens — useful but not essential at this scale |
 
-### SFT data — simple, clean, no filtering required
+### SFT data — reasoning-first strategy
 
-| Dataset | Size | License | Role |
-|---|---|---|---|
-| Finance-Alpaca | 68K rows | MIT | Financial QA: stocks, taxes, loans, crypto, personal finance — simple instruction format |
-| SmolTalk (existing) | ~267K rows | Apache 2.0 | General conversation; prevents the model forgetting how to chat |
+Informed by Sebastian Raschka's article on reasoning LLMs: for small models, **distillation
+(SFT on stronger-model outputs) beats pure RL**. Quality chain-of-thought examples matter
+more than volume — Sky-T1 (32B) matched o1 using only 17K SFT samples at a total cost of $450.
 
-**Why Finance-Alpaca instead of Finance-Instruct-500k?**
-Finance-Instruct-500k requires filtering out FinQA, TAT-QA, and ConvFinQA subsets to avoid train/test contamination — that is extra work and risk. Finance-Alpaca is a clean, MIT-licensed dataset with no contamination risk. Smaller (68K vs 518K) but cleaner and simpler to use.
+We therefore prioritize chain-of-thought data generated by a stronger model over simple Q&A.
 
-### Evaluation benchmarks
+| Dataset | Size | License | Role | Format |
+|---|---|---|---|---|
+| FinCoT | 9.2K rows | Apache 2.0 | GPT-4o CoT on FinQA — core reasoning data | `<think>` traces |
+| Generated finance CoT | ~5–10K rows | Own generation | GPT-4o/Claude traces on TAT-QA + FinanceBench | `<think>` traces |
+| SmolTalk (existing) | ~267K rows | Apache 2.0 | General conversation — prevents forgetting | Standard |
+| Finance-Alpaca | 68K rows | MIT | Simple financial Q&A — supplementary | Standard |
+
+**API cost to generate 5–10K CoT examples:** ~$10–20 using GPT-4o mini.
+
+### Evaluation benchmarks (never train on these)
 
 | Benchmark | What it measures |
 |---|---|
@@ -125,12 +133,14 @@ Finance-Instruct-500k requires filtering out FinQA, TAT-QA, and ConvFinQA subset
 
 ## Tokenizer plan
 
-Keep the tokenizer retrain even in the budget plan. Cost is ~$1 and it matters because 26% of our training data is PleIAs/SEC — without a finance-aware tokenizer, terms like "EBITDA", "10-K", and "GAAP" fragment into multiple tokens, wasting context window space.
+Keep the tokenizer retrain. Cost is ~$1 and it matters — 26% of training data is PleIAs/SEC, so financial terms like "EBITDA", "10-K", and "GAAP" should be single tokens rather than fragmented.
 
 **Training corpus:**
 - 1B characters from FineWeb-Edu
 - 1B characters from PleIAs/SEC (cleaned)
-- Total: 2B characters — identical scale to current tokenizer training
+- Total: 2B characters — same scale as current tokenizer training
+
+**Special tokens to add:** `<think>` and `</think>` for reasoning traces. Added the same way existing chat special tokens (`<|user|>`, `<|assistant|>`) are added — no vocab size increase needed.
 
 **Command:**
 ```bash
@@ -142,13 +152,126 @@ python tok_train.py \
 
 ---
 
+## Reasoning Enhancements
+
+> Based on: Sebastian Raschka, *Understanding Reasoning LLMs*
+> https://magazine.sebastianraschka.com/p/understanding-reasoning-llms
+>
+> See `readme/reasoning_enhancements.md` for a full technical breakdown of each technique.
+
+---
+
+### Why distillation and not RL for a 250M model
+
+The article identifies four approaches to building reasoning models:
+
+| Approach | Description | Applies to us? |
+|---|---|---|
+| Inference-time scaling | CoT prompting, majority voting — no retraining | ✅ Free — apply at inference |
+| Pure RL | Reasoning emerges from RL alone (R1-Zero style) | ❌ Needs 3B+ params minimum |
+| SFT + RL | Best results, most expensive (R1 full pipeline) | ❌ Too expensive for budget |
+| **Distillation (pure SFT)** | **SFT on outputs generated by a stronger model** | **✅ Our approach** |
+
+The key article finding:
+
+> "Distillation is far more effective than pure RL for smaller models."
+
+TinyZero needed 3B params for stable emergent reasoning with pure RL. At 250M, pure RL
+produces erratic updates. Distillation — training on GPT-4o or Claude chain-of-thought
+outputs — is the right approach. FinCoT already does this. We extend it.
+
+---
+
+### Technique 1 — `<think>` tag format in SFT data
+
+Structure every reasoning SFT example with explicit thinking blocks. The model learns to
+separate its internal reasoning from its final answer.
+
+**Example format:**
+
+```
+User:
+  Apple had revenue of $365.8B in FY2022 and $394.3B in FY2023.
+  What was the year-over-year revenue growth rate?
+
+Assistant:
+  <think>
+  Revenue FY2022 = $365.8B
+  Revenue FY2023 = $394.3B
+  Growth = (394.3 - 365.8) / 365.8 = 28.5 / 365.8 = 7.79%
+  </think>
+  Apple revenue grew **7.8%** year-over-year from FY2022 to FY2023.
+```
+
+FinCoT already uses this format. All generated CoT examples should follow the same structure.
+Add `<think>` and `</think>` as special tokens in `tokenizer_v2/`.
+
+---
+
+### Technique 2 -- Generate finance CoT data via API
+
+Sky-T1 precedent: 32B model trained on 17K SFT samples matched o1 performance.
+
+**Process:**
+1. Take FinQA train split + TAT-QA train split (different from eval sets)
+2. For each problem, call GPT-4o mini requesting step-by-step reasoning with `<think>` tags
+3. Save outputs to `chat_finance_cot.jsonl` in our conversation format
+4. Combine with FinCoT, SmolTalk, Finance-Alpaca for final SFT mix
+
+**Estimated cost:** ~$2 per 1K examples with GPT-4o mini -> 5K examples ~$10, 10K ~$20.
+
+**New script needed:** `generate_finance_cot.py`
+
+---
+
+### Technique 3 -- Journey Learning (self-correction traces)
+
+From the *O1 Replication Journey* paper: train on both correct AND incorrect solution
+paths so the model learns to catch and self-correct errors.
+
+Add self-correction to ~20% of generated CoT examples:
+
+```
+<think>
+Growth = (394.3 - 365.8) / 394.3 = 7.2% ...
+Wait -- I should divide by the base year (FY2022), not the end year.
+Corrected: (394.3 - 365.8) / 365.8 = 7.8%
+</think>
+Apple revenue grew **7.8%** year-over-year.
+```
+
+This is purely a data formatting decision -- no architecture or training changes needed.
+
+---
+
+### Technique 4 -- Inference-time enhancements (zero training cost)
+
+These require no retraining and cost nothing at training time.
+
+**CoT system prompt in `chat_cli.py`:**
+
+```python
+SYSTEM = (
+    "You are a financial analyst assistant. "
+    "Think through problems step by step before giving your final answer. "
+    "For numerical questions, show your calculations inside <think> tags."
+)
+```
+
+**Majority voting in `eval_finance.py`:**
+For FinQA and TAT-QA (verifiable numerical answers), generate 5 responses and
+return the most common answer. Improves benchmark scores with zero additional training.
+
+---
+
 ## Step-by-step implementation
 
 ---
 
-### STEP 1 — Retrain the tokenizer (~5 min, ~$0.30)
+### STEP 1 -- Retrain the tokenizer (~5 min, ~$0.30)
 
-No code changes. Run `tok_train.py` with a mixed corpus (FineWeb-Edu sample + PleIAs/SEC sample).
+Run `tok_train.py` with the mixed corpus. Register `<think>` and `</think>` as
+special tokens alongside existing chat tokens (`<|user|>`, `<|assistant|>`).
 
 ```bash
 python tok_train.py \
@@ -157,39 +280,23 @@ python tok_train.py \
   --output-dir tokenizer_v2/
 ```
 
-Verify:
-```bash
-python tok_eval.py --tokenizer-dir tokenizer_v2/ --include-fwe
-```
+Verify: `python tok_eval.py --tokenizer-dir tokenizer_v2/ --include-fwe`
 
 ---
 
-### STEP 2 — Download and tokenize 3 data sources (~4 hours, ~$16)
-
-**Script:** `fineweb.py` — add `--source` flag for `fineweb`, `sec`, `openhermes`
+### STEP 2 -- Tokenize 3 data sources (~4 hours, ~$16)
 
 ```bash
-# Run all three in parallel on separate processes / screen sessions
 python fineweb.py --source fineweb    --tokenizer-dir tokenizer_v2/ --output-dir /workspace/pretrain_data/fineweb/
 python fineweb.py --source sec        --tokenizer-dir tokenizer_v2/ --output-dir /workspace/pretrain_data/sec/
 python fineweb.py --source openhermes --tokenizer-dir tokenizer_v2/ --output-dir /workspace/pretrain_data/openhermes/
 ```
 
-**Output structure:**
-```
-/workspace/pretrain_data/
-  fineweb/       shard_00000.npy ...  (25B tokens)
-  sec/           shard_00000.npy ...  (9B tokens)
-  openhermes/    shard_00000.npy ...  (1B tokens)
-```
-
 ---
 
-### STEP 3 — Update the data loader for weighted mixing
+### STEP 3 -- Update the data loader for weighted mixing
 
-**File:** `dataloader.py`
-
-Extend `DataLoaderLite` to accept `(directory, weight)` pairs. Mixing happens at the shard level — each batch comes from one source, sampled by weight.
+Extend `DataLoaderLite` in `dataloader.py` to accept `(directory, weight)` pairs.
 
 ```python
 sources = [
@@ -201,59 +308,54 @@ sources = [
 
 ---
 
-### STEP 4 — Update GPTConfig — two lines only
-
-**File:** `train_gpt.py`
+### STEP 4 -- Update GPTConfig (two lines only)
 
 ```python
-# GPTConfig — only these two values change
+# In train_gpt.py GPTConfig -- only these two values change
 block_size: int = 2048   # was 1024
 n_layer:    int = 20     # was 12
 
 # Training hyperparameters
-B             = 16       # micro-batch per GPU (2048 context uses ~2× memory vs 1024)
-T             = 2048     # sequence length
-total_batch_size = 524288  # unchanged
-max_steps     = 66757    # 35B / 524288 ≈ 66,757 steps
-log_dir       = "log_v2/"
+B         = 16        # reduced from 64 -- 2048 context uses more memory
+T         = 2048
+max_steps = 66757     # 35B / 524288
+log_dir   = "log_v2/"
 ```
-
-No changes to model architecture, optimizer, attention, or anything else.
 
 ---
 
-### STEP 5 — Pretrain (~15–17 hours, ~$240–$272)
+### STEP 5 -- Pretrain (~15-17 hours, ~$240-$272)
 
 ```bash
 torchrun --nproc_per_node=4 train_gpt.py --tokenizer-dir tokenizer_v2/
 ```
 
-**What to monitor:**
-- Steps 1–100: loss drops from ~10 → ~5
-- Step 250: first val loss — should be below 5.0
-- Step 1,000: loss should be below 3.5
-- Grad norm: stay below 2.0
-- MFU: target >15% on H100 with FA3
-
-**Checkpoint:** saved every 2,500 steps to `log_v2/`. If interrupted, restart with the same command — resume is automatic.
+Monitor: loss ~10 -> ~5 in first 100 steps; val loss below 5.0 at step 250;
+below 3.5 at step 1000; grad norm below 2.0; MFU target >15%.
+Checkpoints saved every 2,500 steps -- resume is automatic if interrupted.
 
 ---
 
-### STEP 6 — Prepare SFT data (~30 min)
+### STEP 6 -- Generate finance CoT data via API (~$10-20)
 
-No new script needed. Finance-Alpaca is already in instruction format. Convert to our JSONL format and combine with SmolTalk.
+Run `generate_finance_cot.py` against FinQA + TAT-QA train splits.
+Target: 5-10K examples with `<think>` reasoning traces.
+Include self-correction in ~20% of examples (Journey Learning).
+
+Output: `chat_finance_cot.jsonl`
+
+---
+
+### STEP 7 -- Prepare and combine SFT data
 
 ```bash
-python prepare_sft_data.py --split train --output chat_train.jsonl      # existing SmolTalk
-python prepare_finance_sft.py --source finance-alpaca --output chat_finance.jsonl  # new
-cat chat_finance.jsonl chat_train.jsonl > chat_all_train.jsonl
+python prepare_finance_sft.py  # converts FinCoT + Finance-Alpaca to JSONL
+cat chat_finance_cot.jsonl finecot.jsonl finance_alpaca.jsonl chat_train.jsonl > chat_all_train.jsonl
 ```
 
 ---
 
-### STEP 7 — SFT training (~2 hours, ~$8)
-
-No code changes to `sft_train.py`.
+### STEP 8 -- SFT training (~2 hours, ~$8)
 
 ```bash
 python sft_train.py \
@@ -266,22 +368,22 @@ Val BPB target: < 0.50
 
 ---
 
-### STEP 8 — Evaluate (~1 hour, ~$4)
+### STEP 9 -- Evaluate (~1 hour, ~$4)
 
 ```bash
-python chat_cli.py --model-dir sft_checkpoints_v2/ --tokenizer-dir tokenizer_v2/
+python eval_finance.py --model-dir sft_checkpoints_v2/ --tokenizer-dir tokenizer_v2/
+python chat_cli.py     --model-dir sft_checkpoints_v2/ --tokenizer-dir tokenizer_v2/
 ```
 
 **Test prompts:**
 - "What is EBITDA and why do analysts prefer it over net income?"
 - "What is the difference between a 10-K and a 10-Q SEC filing?"
 - "If a company has $500M revenue and $50M net income, what is the net margin?"
-- "What are the main risk factors a company must disclose in a 10-K?"
 
 **Target scores:**
 - FinanceBench: > 35% (random ~25%)
 - AdaptLLM Finance-Tasks average: > 55%
-- Financial PhraseBank sentiment accuracy: > 70%
+- FinQA exact match with majority voting: > 25%
 
 ---
 
@@ -289,56 +391,49 @@ python chat_cli.py --model-dir sft_checkpoints_v2/ --tokenizer-dir tokenizer_v2/
 
 | File | Change | What |
 |---|---|---|
-| `tok_train.py` | No change | Run with new mixed corpus |
-| `fineweb.py` | Extend | Add `--source` flag for `sec` and `openhermes` |
-| `dataloader.py` | Extend | Weighted `(dir, weight)` shard loader |
-| `train_gpt.py` | 2-line edit | `n_layer=20`, `block_size=2048` in GPTConfig |
+| `tok_train.py` | No change | Run with new mixed corpus; register think tokens |
+| `fineweb.py` | Extend | Add --source flag for sec and openhermes |
+| `dataloader.py` | Extend | Weighted (dir, weight) shard loader |
+| `train_gpt.py` | 2-line edit | n_layer=20, block_size=2048 |
 | `sft_train.py` | No change | Run with combined JSONL |
-| `prepare_finance_sft.py` | New | Download + convert Finance-Alpaca to JSONL |
-
----
-
-## Cost summary
-
-| Stage | Cost |
-|---|---|
-| Tokenizer retrain | ~$0.30 |
-| Data tokenization (3 sources) | ~$16 |
-| Pretraining — 35B tokens, 4× H100 | ~$240–$272 |
-| SFT | ~$8 |
-| Evaluation | ~$4 |
-| **Total** | **~$268–$300** |
+| `generate_finance_cot.py` | New | GPT-4o mini API: finance CoT with think tags |
+| `prepare_finance_sft.py` | New | Convert Finance-Alpaca + FinCoT to JSONL |
+| `chat_cli.py` | Small edit | Add CoT system prompt |
+| `eval_finance.py` | New | FinanceBench + AdaptLLM with majority voting |
 
 ---
 
 ## Comparison: budget vs full plan vs current
 
-| | Current (done) | Budget (<$300) | Full Plan |
+| | Current (done) | Budget plan | Full plan |
 |---|---|---|---|
 | Params | ~176M | **~250M** | ~470M |
 | Context | 1,024 | **2,048** | 4,096 |
 | Training tokens | 10B | **35B** | 47B |
 | Finance data % | 0% | **26%** | 41% |
-| Data sources | 1 | **3** | 6 |
-| GPU setup | 4× H100 | **4× H100** | 4× H100 |
-| Pretrain time | ~2.5h | **~15–17h** | ~55–65h |
+| SFT strategy | Simple Q&A | **Reasoning CoT + think tags** | Reasoning CoT |
+| GPU setup | 4x H100 | **4x H100** | 4x H100 |
+| Pretrain time | ~2.5h | **~15-17h** | ~55-65h |
 | Pretrain cost | ~$40 | **~$256** | ~$960 |
-| SFT cost | ~$4 | **~$8** | ~$16 |
-| **Total cost** | **~$50** | **~$268–$300** | **~$976–$1,076** |
+| SFT + CoT gen cost | ~$4 | **~$28-40** | ~$50 |
+| **Total cost** | **~$50** | **~$290-320** | **~$1,010-1,110** |
 
 ---
 
 ## Recommended execution order
 
 ```
-Step 1  →  Retrain tokenizer (FineWeb-Edu + SEC sample)         ~$0.30
-Step 2  →  Tokenize 3 data sources (fineweb, sec, openhermes)   ~$16
-Step 3  →  Update dataloader.py (weighted 3-source loader)
-Step 4  →  Edit train_gpt.py (n_layer=20, block_size=2048)
-Step 5  →  Pretrain 250M on 35B tokens — 4× H100               ~$256
-Step 6  →  Prepare SFT data (Finance-Alpaca + SmolTalk)
-Step 7  →  SFT training                                          ~$8
-Step 8  →  Evaluate on FinanceBench + AdaptLLM                  ~$4
-                                                         ──────────────
-                                                         Total  ~$284
+Step 1   Retrain tokenizer (FineWeb-Edu + SEC + think tokens)    ~$0.30
+Step 2   Tokenize 3 data sources (fineweb, sec, openhermes)      ~$16
+Step 3   Update dataloader.py (weighted 3-source loader)
+Step 4   Edit train_gpt.py (n_layer=20, block_size=2048)
+Step 5   Pretrain 250M on 35B tokens -- 4x H100                  ~$256
+Step 6   Generate finance CoT via API (5-10K examples)           ~$10-20
+Step 7   Combine SFT data (FinCoT + generated CoT + SmolTalk)
+Step 8   SFT training                                             ~$8
+Step 9   Evaluate (majority voting + FinanceBench + AdaptLLM)    ~$4
+                                                          --------
+                                                          ~$294-$304
 ```
+
+> For strict sub-$300: 5K CoT examples with GPT-4o mini (~$10) brings total to ~$294.

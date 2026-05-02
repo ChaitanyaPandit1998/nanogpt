@@ -206,18 +206,113 @@ at evaluation time only — zero impact on training budget.
 
 ---
 
+## Technique 5 — RL stage (optional, adapted from nanochat)
+
+> Source: nanochat `scripts/chat_rl.py` by Andrej Karpathy
+> Reference: Raschka, *The State of Reinforcement Learning for LLM Reasoning*
+
+### What the algorithm actually is
+
+Our plan originally called this "GRPO". After comparing with nanochat's implementation,
+the correct description is **REINFORCE with mean-subtraction advantage** — significantly
+simpler than full GRPO:
+
+| Component | Full GRPO | What we actually use |
+|---|---|---|
+| Reference model (KL penalty) | Yes | **No** — omitted |
+| PPO ratio + clip | Yes | **No** — on-policy, not needed |
+| Critic / value model | Yes | **No** — replaced by group mean |
+| Advantage | `(r - mu) / sigma` z-score | **`r - mu`** mean only |
+| Loss normalization | Sequence-level | **Token-level** (DAPO style) |
+
+Karpathy's own comment in the code: *"I put GRPO in quotes because we actually end up
+with something a lot simpler and more similar to just REINFORCE."*
+
+### Why token-level normalization matters
+
+Without it, longer wrong answers get smaller per-token penalty:
+
+```
+Wrong answer (10 tokens):  loss penalty = -1 / 10  = -0.10 per token
+Wrong answer (50 tokens):  loss penalty = -1 / 50  = -0.02 per token
+```
+
+The model learns to be verbose to dilute penalties. Token-level normalization (DAPO style)
+divides by the total number of valid tokens, not the number of sequences — equal penalty
+per token regardless of answer length.
+
+### Concrete parameters (from nanochat chat_rl.py)
+
+```python
+num_samples       = 16     # rollouts per question — must be >1 for group advantage
+examples_per_step = 16     # optimizer step size
+device_batch_size = 8      # process 8 rollouts at once to avoid OOM
+init_lr_frac      = 0.05   # start at 5% of base LR — prevents destructive first update
+num_epochs        = 1      # one full pass through FinQA train (~5K problems = ~312 steps)
+temperature       = 1.0    # exploration during rollout generation
+max_new_tokens    = 256    # cap response length
+```
+
+### Why num_samples must be > 1
+
+With only 1 rollout per question, advantage = `reward - mean([reward])` = 0 always.
+No gradient signal. You need at least 4–8 samples per question for a meaningful group
+baseline. nanochat uses 16.
+
+### Why init_lr_frac = 0.05 matters
+
+The first RL update hits an unstable reward landscape before the model has learned what
+gets rewarded. Starting at 5% of base LR prevents the first few bad updates from
+destroying the weights that SFT spent hours building. Same principle as the warm-start
+optimizer fix for Muon in our SFT stage.
+
+### Our warm-start advantage over nanochat
+
+nanochat runs RL cold — directly on an SFT model with no reasoning format.
+
+Our model enters RL having already learned:
+1. `<think>` tag format — it knows to reason step-by-step before answering
+2. Journey Learning traces — it has seen self-correction examples
+3. Financial domain language — it understands FinQA problem structure
+
+The RL stage then reinforces *correct* reasoning rather than teaching reasoning from scratch.
+This warm start should produce cleaner reward signals from step 1.
+
+### Implementation plan
+
+Only one new file needed — `tasks/finqa.py` — with the same interface as nanochat's
+`tasks/gsm8k.py`. The entire training loop in `chat_rl.py` is reusable unchanged.
+
+```
+tasks/gsm8k.py (nanochat)      →    tasks/finqa.py (ours)
+  GSM8K dataset loading              FinQA dataset loading
+  Answer extraction from text        Answer extraction from <think> blocks
+  reward() function                  reward() function (number match)
+  evaluate() function                evaluate() function
+```
+
+The reward function for FinQA: extract the final numerical answer from the model output,
+compare against ground truth with tolerance for formatting differences ($2.3M vs 2300000).
+
+### Evaluation
+
+Run GSM8K-style pass@k on FinQA test split every 60 steps.
+**Run with 3 different random seeds** — gains at 250M scale can shift ±3–5 points
+between seeds. Report the average, not the best seed.
+
+---
+
 ## What we explicitly do NOT do (and why)
 
 | Technique | Reason we skip |
 |---|---|
-| Pure RL (R1-Zero) | Requires 3B+ params for stable emergent reasoning; 250M is too small |
+| Full GRPO (with KL + reference model) | Needs 2× memory for reference model; unnecessary for on-policy training |
 | Process Reward Models (PRM) | Needs a trained reward model — complex infrastructure |
 | Monte Carlo Tree Search (MCTS) | Very expensive at inference; complex to implement |
 | Full SFT + RL pipeline (R1) | 4 stages, 800K examples — out of budget scope |
 
-The article notes that even DeepSeek found PRM and MCTS to be "unsuccessful attempts"
-during R1 development. For a 250M finance model, distillation + inference-time CoT prompting
-is the practical, cost-effective path.
+DeepSeek found PRM and MCTS to be "unsuccessful attempts" during R1 development.
+For a 250M finance model, distillation + simple REINFORCE is the practical path.
 
 ---
 
@@ -226,9 +321,11 @@ is the practical, cost-effective path.
 | What | Change | Cost |
 |---|---|---|
 | Tokenizer | Add `<think>`, `</think>` as special tokens | $0 (part of retrain) |
-| SFT data | Add generated CoT (5-10K examples) with think tags + Journey Learning | ~$10-20 API |
+| SFT data | FinCoT + generated CoT (5-10K, GPT-4o mini) with think tags + Journey Learning | ~$10-20 API |
 | `chat_cli.py` | Add CoT system prompt | $0 |
-| `eval_finance.py` | Add majority voting for numerical answers | $0 |
-| `generate_finance_cot.py` | New script to call API and generate CoT data | $0 to write |
+| `eval_finance.py` | Majority voting (n=5) for numerical FinQA questions | $0 |
+| `generate_finance_cot.py` | Call API to generate CoT data on FinQA + TAT-QA | $0 to write |
+| `tasks/finqa.py` | FinQA task class — reward fn for RL stage | $0 to write |
+| `rl_train.py` | REINFORCE RL loop adapted from nanochat chat_rl.py | ~$12 to run |
 | Model architecture | No changes | — |
-| Training hyperparameters | No changes | — |
+| Training hyperparameters | No changes except RL stage | — |

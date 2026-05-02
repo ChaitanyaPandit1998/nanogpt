@@ -426,25 +426,57 @@ python chat_cli.py     --model-dir sft_checkpoints_v2/ --tokenizer-dir tokenizer
 
 ---
 
-### STEP 10 -- Optional GRPO RL stage (~2 hours, ~$8)
+### STEP 10 -- Optional RL stage (~3 hours, ~$12)
 
-> Source: Raschka, *The State of Reinforcement Learning for LLM Reasoning*
->
-> Finding: a 1.5B model beat o1-preview on AIME24 using 7,000 examples and **$42 compute**
-> with GRPO — no critic model, binary correctness rewards only.
+> Implementation basis: nanochat `scripts/chat_rl.py` (Andrej Karpathy)
+> Algorithm: REINFORCE with mean-subtraction advantage — NOT full GRPO
+> (no reference model, no KL penalty, no PPO clip — simpler and already working in our codebase)
 
-After SFT, run a short GRPO stage on FinQA problems using verifiable rewards:
-- **Reward signal**: answer is correct (1) or wrong (0) — no reward model needed, just
-  compare the extracted number against the ground truth
-- **Dataset**: FinQA train split (~5,000 problems with numerical answers)
-- **Duration**: 50–100 steps only — the article warns that longer GRPO runs cause instability
-- **Expected gain**: +5–8 points on FinQA exact match
+**What the algorithm actually does:**
 
-**Warning from the article:** improvements at small model scale are statistically noisy.
-Benchmark gains may shift by several percentage points across random seeds. Treat GRPO
-results as indicative, not definitive. Run eval with 3 different seeds and report the average.
+For each FinQA problem, generate 16 candidate answers. Check which are correct.
+Reward correct = +1, wrong = 0. Advantage = reward − mean(rewards in group).
+Backprop through token log-probabilities weighted by per-token advantage.
 
-This step is **optional** — skip it to stay under $300.
+```
+advantage = reward - mean(all rewards in batch)
+loss = -sum(logp_token × advantage) / num_valid_tokens   ← token-level, DAPO style
+```
+
+Token-level normalization (dividing by `num_valid_tokens` not sequence count) prevents
+length bias — without it, longer wrong answers receive smaller per-token penalty and the
+model learns to be verbose rather than correct.
+
+**Concrete training parameters (from nanochat):**
+
+| Parameter | Value | Why |
+|---|---|---|
+| `num_samples` | 16 per question | Need multiple rollouts to compute meaningful group advantage |
+| `examples_per_step` | 16 | Optimizer step size |
+| `device_batch_size` | 8 | Process 8 rollouts at a time to avoid OOM |
+| `init_lr_frac` | 0.05 | Start at 5% of base LR — prevents destructive first updates |
+| `num_epochs` | 1 | One full pass through FinQA train split (~5K problems) |
+| `max_new_tokens` | 256 | Cap response length |
+| `temperature` | 1.0 | Exploration during training |
+| Dataset | FinQA train split | ~5K problems with verifiable numerical answers |
+| **Total steps** | **~312** | 5K problems ÷ 16 per step |
+
+**Why our model has an advantage over nanochat's cold RL start:**
+
+nanochat runs RL directly on the SFT model with no reasoning format. Our model has already
+been trained with `<think>` tags and Journey Learning — it knows how to reason step-by-step
+before answering. The RL stage then reinforces *correct* reasoning, not just any reasoning.
+This warm start should produce cleaner reward signals from step 1.
+
+**What to adapt from nanochat:**
+- `tasks/gsm8k.py` → `tasks/finqa.py` (same interface, different dataset + reward function)
+- `scripts/chat_rl.py` → `rl_train.py` in our repo (keep training loop unchanged)
+- Add wandb logging for reward curve tracking
+
+**Warning:** improvements at 250M scale are statistically noisy (random seed can shift
+scores ±3–5 points). Run eval with 3 seeds, report average. Treat as indicative.
+
+This step is **optional** — skip to stay under $300.
 
 ---
 
@@ -461,6 +493,8 @@ This step is **optional** — skip it to stay under $300.
 | `prepare_finance_sft.py` | New | Convert Finance-Alpaca + FinCoT to JSONL |
 | `chat_cli.py` | Small edit | Add CoT system prompt |
 | `eval_finance.py` | New | FinanceBench + AdaptLLM with majority voting |
+| `tasks/finqa.py` | New | FinQA task class (reward fn) — adapter for rl_train.py |
+| `rl_train.py` | New | RL training loop adapted from nanochat chat_rl.py |
 
 ---
 

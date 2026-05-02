@@ -78,7 +78,6 @@ FINANCE_IMPORTS = [
     "pyfolio", "zipline", "ffn", "bt", "quantstats",
     "alphalens", "empyrical", "mplfinance", "pandas_ta",
     "talib", "riskfolio", "openbb", "gs_quant", "backtrader",
-    "empyrical", "ffn", "quantstats",
 ]
 
 FINANCE_KEYWORDS = [
@@ -420,14 +419,21 @@ def collect_from_kaggle(output_path: str, seen_hashes: set, budget: "TokenBudget
         return {"files": 0, "chars": 0}
 
     KAGGLE_KEYWORDS = ["finance", "stock", "portfolio", "trading", "quantitative", "financial"]
-    stats = {"files": 0, "chars": 0}
-    tmp_dir = "/tmp/kaggle_notebooks"
+    stats     = {"files": 0, "chars": 0}
+    seen_refs = set()           # deduplicate across keyword searches
+    tmp_dir   = "/tmp/kaggle_notebooks"
     os.makedirs(tmp_dir, exist_ok=True)
 
     print("\n[Kaggle] Searching for finance Python notebooks...")
     for keyword in KAGGLE_KEYWORDS:
+        if budget.exhausted():
+            break
         try:
-            kernels = kaggle.api.kernels_list(search=keyword, language="python", page_size=100)
+            kernels = kaggle.api.kernels_list(
+                search=keyword, language="python",
+                sort_by="voteCount",    # top-voted first — higher quality
+                page_size=100,
+            )
         except Exception as e:
             print(f"  Search '{keyword}' failed: {e}")
             continue
@@ -437,7 +443,11 @@ def collect_from_kaggle(output_path: str, seen_hashes: set, budget: "TokenBudget
                 print(f"  Budget reached. {budget.progress_str()}")
                 break
 
-            ref = kernel.ref  # username/kernel-slug
+            ref = kernel.ref
+            if ref in seen_refs:        # skip duplicates across keyword searches
+                continue
+            seen_refs.add(ref)
+
             dest = os.path.join(tmp_dir, ref.replace("/", "__"))
             os.makedirs(dest, exist_ok=True)
 
@@ -446,7 +456,6 @@ def collect_from_kaggle(output_path: str, seen_hashes: set, budget: "TokenBudget
             except Exception:
                 continue
 
-            # Find the downloaded notebook
             for nb_path in Path(dest).rglob("*.ipynb"):
                 if budget.exhausted():
                     break

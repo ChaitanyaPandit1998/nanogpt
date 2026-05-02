@@ -51,6 +51,69 @@ from pathlib import Path
 from tqdm import tqdm
 
 # ---------------------------------------------------------------------------
+# Size budget — limits total output to a target token count
+
+
+def parse_size(s: str) -> int:
+    """Parse human-readable size into integer token count.
+
+    Examples:
+        '3B'   → 3,000,000,000   (3 billion tokens)
+        '500M' → 500,000,000     (500 million tokens)
+        '1.5B' → 1,500,000,000
+        '250M' → 250,000,000
+
+    Rough conversion: 1 GB of text ≈ 250M tokens (4 chars per token).
+    So '--target-tokens 3B' ≈ 12 GB of raw text.
+    """
+    s = s.strip().upper()
+    multipliers = {"K": 1_000, "M": 1_000_000, "B": 1_000_000_000, "T": 1_000_000_000_000}
+    for suffix, mult in multipliers.items():
+        if s.endswith(suffix):
+            return int(float(s[:-1]) * mult)
+    return int(s)
+
+
+class TokenBudget:
+    """Tracks characters written and stops collection when target is reached.
+
+    Uses the rough estimate: 1 token ≈ 4 characters.
+    Pass target_tokens=None for unlimited collection.
+    """
+
+    CHARS_PER_TOKEN = 4
+
+    def __init__(self, target_tokens: int | None):
+        self.target_tokens = target_tokens
+        self.chars_written = 0
+
+    def add(self, chars: int):
+        """Record chars written — call after every successful write."""
+        self.chars_written += chars
+
+    def exhausted(self) -> bool:
+        """Return True when the target has been reached."""
+        if self.target_tokens is None:
+            return False
+        return self.chars_written >= self.target_tokens * self.CHARS_PER_TOKEN
+
+    def tokens_written(self) -> int:
+        return self.chars_written // self.CHARS_PER_TOKEN
+
+    def remaining_tokens(self) -> int:
+        if self.target_tokens is None:
+            return float("inf")
+        return max(0, self.target_tokens - self.tokens_written())
+
+    def progress_str(self) -> str:
+        written = self.tokens_written()
+        if self.target_tokens is None:
+            return f"{written:,} tokens written (no limit)"
+        pct = written / self.target_tokens * 100
+        return f"{written:,} / {self.target_tokens:,} tokens ({pct:.1f}%)"
+
+
+# ---------------------------------------------------------------------------
 # GitHub repo list — Apache 2.0 / MIT / BSD only, NO GPL
 
 GITHUB_REPOS = [
@@ -258,6 +321,7 @@ def collect_from_github(
     seen_hashes: set,
     min_lines: int,
     max_lines: int,
+    budget: "TokenBudget",
 ) -> dict:
     """Clone all repos, extract files, write to output JSONL. Returns stats dict."""
     os.makedirs(clone_dir, exist_ok=True)
@@ -265,6 +329,10 @@ def collect_from_github(
 
     with open(output_path, "a", encoding="utf-8") as out_f:
         for repo_info in GITHUB_REPOS:
+            if budget.exhausted():
+                print(f"\n[GitHub] Budget reached — stopping. {budget.progress_str()}")
+                break
+
             repo_slug = repo_info["repo"]
             license_str = repo_info["license"]
             print(f"\n[GitHub] {repo_slug} ({license_str})")
@@ -279,6 +347,9 @@ def collect_from_github(
             print(f"  Found {len(entries)} qualifying files")
 
             for entry in entries:
+                if budget.exhausted():
+                    print(f"  Budget reached mid-repo. {budget.progress_str()}")
+                    break
                 h = md5(entry["content"])
                 if h in seen_hashes:
                     stats["skipped_dupes"] += 1
@@ -288,6 +359,7 @@ def collect_from_github(
                 write_entry(out_f, text, "github", repo_slug, entry["path"])
                 stats["files"] += 1
                 stats["chars"] += len(text)
+                budget.add(len(text))
 
     return stats
 
@@ -302,6 +374,7 @@ def collect_from_stack(
     limit: int,
     min_lines: int,
     max_lines: int,
+    budget: "TokenBudget",
     start_from: int = 0,
 ) -> dict:
     """Stream The Stack Python subset, filter for finance, write to JSONL."""
@@ -334,6 +407,10 @@ def collect_from_stack(
         pbar = tqdm(desc="The Stack", unit=" files", total=limit)
 
         for row in ds:
+            # Stop if file-count limit OR token budget exhausted
+            if budget.exhausted():
+                pbar.set_postfix({"status": "budget reached"})
+                break
             if processed < start_from:
                 processed += 1
                 continue
@@ -363,11 +440,18 @@ def collect_from_stack(
             write_entry(out_f, text, "the_stack", "bigcode/the-stack-dedup", path)
             stats["files"] += 1
             stats["chars"] += len(text)
+            budget.add(len(text))
 
             if stats["files"] % 5000 == 0:
-                pbar.set_postfix({"kept": stats["files"], "chars": f"{stats['chars'] // 1_000_000}M"})
+                pbar.set_postfix({
+                    "kept": stats["files"],
+                    "budget": budget.progress_str(),
+                })
 
         pbar.close()
+
+    if budget.exhausted():
+        print(f"  Token budget reached. {budget.progress_str()}")
 
     stats["processed_total"] = processed
     return stats
@@ -377,7 +461,7 @@ def collect_from_stack(
 # Source 3: Kaggle (optional)
 
 
-def collect_from_kaggle(output_path: str, seen_hashes: set) -> dict:
+def collect_from_kaggle(output_path: str, seen_hashes: set, budget: "TokenBudget") -> dict:
     """Download top finance Kaggle notebooks. Requires KAGGLE_USERNAME + KAGGLE_KEY."""
     username = os.environ.get("KAGGLE_USERNAME")
     key      = os.environ.get("KAGGLE_KEY")
@@ -409,6 +493,10 @@ def collect_from_kaggle(output_path: str, seen_hashes: set) -> dict:
             continue
 
         for kernel in tqdm(kernels, desc=f"Kaggle:{keyword}"):
+            if budget.exhausted():
+                print(f"  Budget reached. {budget.progress_str()}")
+                break
+
             ref = kernel.ref  # username/kernel-slug
             dest = os.path.join(tmp_dir, ref.replace("/", "__"))
             os.makedirs(dest, exist_ok=True)
@@ -420,6 +508,8 @@ def collect_from_kaggle(output_path: str, seen_hashes: set) -> dict:
 
             # Find the downloaded notebook
             for nb_path in Path(dest).rglob("*.ipynb"):
+                if budget.exhausted():
+                    break
                 code = extract_notebook_code(str(nb_path))
                 if not code or not is_finance_file(code):
                     continue
@@ -432,6 +522,7 @@ def collect_from_kaggle(output_path: str, seen_hashes: set) -> dict:
                     write_entry(out_f, text, "kaggle", ref, str(nb_path.name))
                     stats["files"] += 1
                     stats["chars"] += len(text)
+                    budget.add(len(text))
 
     return stats
 
@@ -484,17 +575,26 @@ def save_checkpoint(path: str, state: dict):
 
 def main():
     parser = argparse.ArgumentParser(description="Collect finance Python code for pretraining")
-    parser.add_argument("--output-file",  default="/workspace/data/raw/code_train.jsonl", help="Output JSONL file")
-    parser.add_argument("--source",       default="all",                                   help="github | stack | kaggle | all")
-    parser.add_argument("--clone-dir",    default="/workspace/finance_repos",              help="Where to clone GitHub repos")
-    parser.add_argument("--stack-limit",  type=int, default=200_000,   help="Max files to stream from The Stack")
-    parser.add_argument("--min-lines",    type=int, default=10,         help="Min lines per file")
-    parser.add_argument("--max-lines",    type=int, default=5000,       help="Max lines per file")
-    parser.add_argument("--resume",       action="store_true",          help="Resume from checkpoint")
+    parser.add_argument("--output-file",    default="/workspace/data/raw/code_train.jsonl", help="Output JSONL file")
+    parser.add_argument("--source",         default="all",                                   help="github | stack | kaggle | all")
+    parser.add_argument("--clone-dir",      default="/workspace/finance_repos",              help="Where to clone GitHub repos")
+    parser.add_argument("--stack-limit",    type=int, default=200_000,   help="Max files scanned from The Stack (file count)")
+    parser.add_argument("--target-tokens",  type=str, default=None,      help="Stop collection after this many tokens. e.g. 3B, 500M, 1.5B. 1 GB text ≈ 250M tokens.")
+    parser.add_argument("--min-lines",      type=int, default=10,         help="Min lines per file")
+    parser.add_argument("--max-lines",      type=int, default=5000,       help="Max lines per file")
+    parser.add_argument("--resume",         action="store_true",          help="Resume from checkpoint")
     args = parser.parse_args()
 
     # Ensure output directory exists
     Path(args.output_file).parent.mkdir(parents=True, exist_ok=True)
+
+    # Set up token budget
+    target_tokens = parse_size(args.target_tokens) if args.target_tokens else None
+    budget = TokenBudget(target_tokens)
+    if target_tokens:
+        print(f"Token budget: {target_tokens:,} tokens  (~{target_tokens * 4 / 1e9:.1f} GB of text)")
+    else:
+        print("Token budget: unlimited")
 
     sources = {s.strip() for s in args.source.split(",")} if args.source != "all" else {"github", "stack", "kaggle"}
     checkpoint_path = args.output_file.replace(".jsonl", "_code_checkpoint.json")
@@ -521,12 +621,12 @@ def main():
     kaggle_stats = {"files": 0, "chars": 0}
 
     # Source 1: GitHub
-    if "github" in sources and not ckpt.get("github_done"):
+    if "github" in sources and not ckpt.get("github_done") and not budget.exhausted():
         print("\n" + "=" * 50)
         print("SOURCE 1: GitHub repos")
         print("=" * 50)
         github_stats = collect_from_github(
-            args.clone_dir, args.output_file, seen_hashes, args.min_lines, args.max_lines
+            args.clone_dir, args.output_file, seen_hashes, args.min_lines, args.max_lines, budget
         )
         ckpt["github_done"] = True
         ckpt["github_stats"] = github_stats
@@ -537,14 +637,14 @@ def main():
         print(f"\n[GitHub] Already done (checkpoint). {github_stats['files']:,} files.")
 
     # Source 2: The Stack
-    if "stack" in sources and not ckpt.get("stack_done"):
+    if "stack" in sources and not ckpt.get("stack_done") and not budget.exhausted():
         print("\n" + "=" * 50)
         print("SOURCE 2: The Stack (streaming)")
         print("=" * 50)
         stack_start = ckpt.get("stack_files_processed", 0)
         stack_stats = collect_from_stack(
             args.output_file, seen_hashes, args.stack_limit,
-            args.min_lines, args.max_lines, start_from=stack_start,
+            args.min_lines, args.max_lines, budget, start_from=stack_start,
         )
         ckpt["stack_done"] = True
         ckpt["stack_stats"] = stack_stats
@@ -555,11 +655,11 @@ def main():
         print(f"\n[The Stack] Already done (checkpoint). {stack_stats['files']:,} files.")
 
     # Source 3: Kaggle
-    if "kaggle" in sources and not ckpt.get("kaggle_done"):
+    if "kaggle" in sources and not ckpt.get("kaggle_done") and not budget.exhausted():
         print("\n" + "=" * 50)
         print("SOURCE 3: Kaggle notebooks (optional)")
         print("=" * 50)
-        kaggle_stats = collect_from_kaggle(args.output_file, seen_hashes)
+        kaggle_stats = collect_from_kaggle(args.output_file, seen_hashes, budget)
         ckpt["kaggle_done"] = True
         ckpt["kaggle_stats"] = kaggle_stats
         save_checkpoint(checkpoint_path, ckpt)
@@ -567,7 +667,8 @@ def main():
         kaggle_stats = ckpt.get("kaggle_stats", kaggle_stats)
 
     print_stats(github_stats, stack_stats, kaggle_stats)
-    print(f"\nOutput: {args.output_file}")
+    print(f"\nFinal budget status: {budget.progress_str()}")
+    print(f"Output: {args.output_file}")
 
 
 if __name__ == "__main__":

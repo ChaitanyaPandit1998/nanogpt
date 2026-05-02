@@ -1,21 +1,22 @@
-# nanogpt 2.0 — Budget Plan (Under $300)
+# nanogpt 2.0 — Budget Plan (~$350)
 
 > A trimmed-down version of [PLAN_v2.md](PLAN_v2.md) that delivers a finance-capable model
-> within a ~$300 RunPod budget. The approach: smaller model, fewer data sources,
-> reasoning-first SFT — without sacrificing the core finance domain capability.
+> with **code generation** within a ~$350 RunPod budget. The approach: smaller model,
+> targeted data sources, reasoning-first SFT, and finance-domain Python code capability.
 
 ---
 
 ## What changes from the full plan
 
-| Decision | Full Plan | Budget Plan | Why |
+| Decision | Full Plan | Budget Plan (~$350) | Why |
 |---|---|---|---|
 | Model params | ~470M | **~250M** | Fewer layers = faster steps |
 | Context length | 4,096 | **2,048** | 2× cheaper attention; still 2× better than current |
-| Training tokens | ~47B | **~35B** | Fits in the pretraining time budget |
-| Data sources | 6 | **3** | Drop EDGAR (overlaps SEC), Reuters (too small), Earnings (nice-to-have) |
-| Tokenizer retrain | Yes | **Yes (keep it)** | Cost is ~$1; worth it for 26% finance data |
-| SFT data | Finance-Instruct-500k + FinCoT + SmolTalk | **FinCoT + generated CoT + SmolTalk** | Reasoning-first strategy (see section below) |
+| Training tokens | ~47B | **~37B** | 35B base + 2B code |
+| Data sources | 6 | **4** | FineWeb-Edu + SEC + OpenHermes + Python code |
+| Code capability | No | **Yes (finance-specific)** | 2B code tokens in pretrain + 7.5K code SFT |
+| Tokenizer retrain | Yes | **Yes (with code)** | Finance terms + code patterns as single tokens |
+| SFT data | Finance-Instruct-500k + FinCoT + SmolTalk | **75K CoT + 7.5K code + Finance-Alpaca + SmolTalk** | Reasoning-first + code capability |
 
 ---
 
@@ -25,15 +26,20 @@ RunPod pricing: **$4.00/GPU/hr for H100 SXM**
 
 | Stage | Hardware | Duration | Cost |
 |---|---|---|---|
-| Tokenizer retrain | 1× H100 | ~5 min | ~$0.30 |
-| Data tokenize — 3 sources | 1× H100 | ~4 hours | ~$16 |
-| **Pretraining — 35B tokens** | **4× H100** | **~15–17 hours** | **~$240–$272** |
-| Generate CoT data via API | External API | — | ~$10–20 |
-| SFT | 1× H100 | ~2 hours | ~$8 |
+| Tokenizer retrain (with code) | 1× H100 | ~5 min | ~$0.30 |
+| Data tokenize — 4 sources (+ code) | 1× H100 | ~5 hours | ~$20 |
+| **Pretraining — 37B tokens** | **4× H100** | **~16.5 hours** | **~$264** |
+| Generate finance CoT — 75–80K examples (GPT-4o mini) | API | — | ~$30 |
+| Generate finance code SFT — 7.5K examples (GPT-4o mini) | API | — | ~$5 |
+| SFT with LoRA | 1× H100 | ~2 hours | ~$8 |
 | Evaluation | 1× H100 | ~1 hour | ~$4 |
-| **Total** | | **~22–25 hours active** | **~$278–$320** |
+| **Total without RL** | | **~25–27 hours active** | **~$331** |
+| Optional RL — Step 10 | 1× H100 | ~3 hours | ~$12 |
+| **Total with RL** | | **~28–30 hours active** | **~$343** |
 
-> To stay strictly under $300: use GPT-4o mini for CoT generation (~$10) and generate ~5K examples instead of 10K.
+> Note: earlier estimates said +2B code tokens adds ~$40 to pretraining — this was wrong.
+> Correct calculation: 2B / 2.25B tok/hr = 0.9 extra hours × $16 = ~$14 extra.
+> Both total options land comfortably under $350.
 
 ---
 
@@ -103,21 +109,30 @@ sparse activations. **Decision: keep ReLU² for now; revisit for the 500M full p
 
 ## Data plan
 
-### Pretraining — 35B tokens from 3 sources
+### Pretraining — 37B tokens from 4 sources
 
-| # | Source | Tokens | Mix % | License | Why kept |
+| # | Source | Tokens | Mix % | License | What it teaches |
 |---|---|---|---|---|---|
-| 1 | FineWeb-Edu | 25B | 71% | ODC-By | General language foundation — non-negotiable |
-| 2 | PleIAs/SEC (10-K filings) | 9B | 26% | CC0 | Core finance domain; public domain; 7.2B+ words available |
-| 3 | OpenHermes (reasoning) | 1B | 3% | Apache 2.0 | Reasoning and instruction-following capability |
-| | **Total** | **35B** | 100% | | |
+| 1 | FineWeb-Edu | 25B | 67.6% | ODC-By | General language, world knowledge, clear explanation |
+| 2 | PleIAs/SEC (10-K filings) | 9B | 24.3% | CC0 | Financial document language, accounting terminology |
+| 3 | Python / finance code | **2B** | **5.4%** | Various (open) | Code syntax, financial computation, pandas/yfinance patterns |
+| 4 | OpenHermes (reasoning) | 1B | 2.7% | Apache 2.0 | Reasoning and instruction-following capability |
+| | **Total** | **37B** | 100% | | |
+
+**Code data sources breakdown (2B tokens total):**
+
+| Source | Tokens | Content |
+|---|---|---|
+| GitHub finance/quant repos (zipline, pyfolio, backtrader, quantlib) | ~800M | Real quantitative finance code |
+| Kaggle finance Jupyter notebooks | ~500M | pandas/yfinance financial analysis patterns |
+| The Stack — Python data science subset | ~700M | numpy, scipy, matplotlib financial plotting |
 
 ### What we dropped and why
 
 | Dropped source | Reason |
 |---|---|
 | EDGAR-Corpus | Overlaps heavily with PleIAs/SEC; deduplication work not worth it at this budget |
-| Reuters Financial News | Only ~116M tokens — too small to meaningfully impact a 35B token run |
+| Reuters Financial News | Only ~116M tokens — too small to meaningfully impact a 37B token run |
 | S&P 500 Earnings Transcripts | ~500M tokens — useful but not essential at this scale |
 
 ### SFT data — reasoning-first strategy
@@ -128,14 +143,33 @@ more than volume — Sky-T1 (32B) matched o1 using only 17K SFT samples at a tot
 
 We therefore prioritize chain-of-thought data generated by a stronger model over simple Q&A.
 
-| Dataset | Size | License | Role | Format |
+| Dataset | Rows | License | Role | Format |
 |---|---|---|---|---|
-| FinCoT | 9.2K rows | Apache 2.0 | GPT-4o CoT on FinQA — core reasoning data | `<think>` traces |
-| Generated finance CoT | ~5–10K rows | Own generation | GPT-4o/Claude traces on TAT-QA + FinanceBench | `<think>` traces |
-| SmolTalk (existing) | ~267K rows | Apache 2.0 | General conversation — prevents forgetting | Standard |
-| Finance-Alpaca | 68K rows | MIT | Simple financial Q&A — supplementary | Standard |
+| FinCoT | 9.2K | Apache 2.0 | GPT-4o CoT on FinQA — core reasoning | `<think>` traces |
+| Generated finance CoT | **~75K** | Own generation | 3 traces × 26.5K problems (FinQA + TAT-QA + ConvFinQA + DocFinQA) | `<think>` traces |
+| **Finance code SFT** | **~7.5K** | Own generation | GPT-4o mini: pandas/yfinance/numpy finance functions | Code + explanation |
+| SmolTalk (existing) | ~267K | Apache 2.0 | General conversation — prevents forgetting | Standard |
+| Finance-Alpaca | 68K | MIT | Simple financial Q&A — supplementary | Standard |
+| **Grand total** | **~427K** | | | |
 
-**API cost to generate 5–10K CoT examples:** ~$10–20 using GPT-4o mini.
+**CoT data share: ~84K / 427K = 20%** — up from 6% in the original plan.
+
+**API cost:** ~$30 for 75K CoT examples + ~$5 for 7.5K code examples = **~$35 total**.
+
+**Why 3 traces per problem (not 1):**
+- Trace 1: Standard step-by-step reasoning
+- Trace 2: Formula/unit check before calculating
+- Trace 3: Deliberate error → self-correction (Journey Learning, ~20% of problems)
+
+**Finance code SFT example format (abbreviated):**
+
+```
+User: Write a Python function to calculate the Sharpe ratio
+      given a list of daily returns and an annual risk-free rate.
+Assistant: [def sharpe_ratio(returns, risk_free_rate): ...]
+```
+
+---
 
 ### SFT method — use LoRA, not full finetuning
 
@@ -168,9 +202,15 @@ consistently across experiments.
 Keep the tokenizer retrain. Cost is ~$1 and it matters — 26% of training data is PleIAs/SEC, so financial terms like "EBITDA", "10-K", and "GAAP" should be single tokens rather than fragmented.
 
 **Training corpus:**
-- 1B characters from FineWeb-Edu
-- 1B characters from PleIAs/SEC (cleaned)
+- 800M characters from FineWeb-Edu
+- 800M characters from PleIAs/SEC (cleaned)
+- 400M characters from Python finance code
 - Total: 2B characters — same scale as current tokenizer training
+
+**Why add code to the tokenizer corpus:**
+Without it, Python keywords fragment badly — `def` → `[d][ef]`, `return` → `[ret][urn]`,
+`df["col"]` → `[df]["][col]["]`. A domain tokenizer makes these single tokens, improving
+both compression and model quality on code generation tasks.
 
 **Special tokens to add:** `<think>` and `</think>` for reasoning traces. Added the same way existing chat special tokens (`<|user|>`, `<|assistant|>`) are added — no vocab size increase needed.
 
@@ -489,7 +529,8 @@ This step is **optional** — skip to stay under $300.
 | `dataloader.py` | Extend | Weighted (dir, weight) shard loader |
 | `train_gpt.py` | 2-line edit | n_layer=20, block_size=2048 |
 | `sft_train.py` | Extend | Add LoRA support (rank=256, alpha=512, all layers); enforce 1-epoch limit |
-| `generate_finance_cot.py` | New | GPT-4o mini API: finance CoT with think tags |
+| `generate_finance_cot.py` | New | GPT-4o mini API: 75K CoT traces (3 per problem) + Journey Learning |
+| `generate_finance_code.py` | New | GPT-4o mini API: 7.5K finance Python code SFT examples |
 | `prepare_finance_sft.py` | New | Convert Finance-Alpaca + FinCoT to JSONL |
 | `chat_cli.py` | Small edit | Add CoT system prompt |
 | `eval_finance.py` | New | FinanceBench + AdaptLLM with majority voting |
@@ -500,17 +541,22 @@ This step is **optional** — skip to stay under $300.
 
 ## Comparison: budget vs full plan vs current
 
-| | Current (done) | Budget plan | Full plan |
+| | Current (done) | Budget plan (~$350) | Full plan |
 |---|---|---|---|
 | Params | ~176M | **~250M** | ~470M |
 | Context | 1,024 | **2,048** | 4,096 |
-| Training tokens | 10B | **35B** | 47B |
-| Finance data % | 0% | **26%** | 41% |
-| SFT strategy | Simple Q&A | **Reasoning CoT + think tags** | Reasoning CoT |
-| GPU setup | 4x H100 | **4x H100** | 4x H100 |
-| Pretrain time | ~2.5h | **~15-17h** | ~55-65h |
-| Pretrain cost | ~$40 | **~$256** | ~$960 |
-| SFT + CoT gen cost | ~$4 | **~$28-40** | ~$50 |
+| Training tokens | 10B | **37B** | 47B |
+| Finance data % | 0% | **24.3%** | 41% |
+| Code capability | None | **Yes (finance Python)** | Yes |
+| SFT strategy | Simple Q&A | **CoT (20%) + code + chat** | Reasoning CoT |
+| CoT share in SFT | 0% | **20%** | ~20% |
+| GPU setup | 4× H100 | **4× H100** | 4× H100 |
+| Pretrain time | ~2.5h | **~16.5h** | ~55-65h |
+| Pretrain cost | ~$40 | **~$264** | ~$960 |
+| API + SFT cost | ~$4 | **~$43** | ~$50 |
+| Optional RL | — | **~$12** | — |
+| **Total (no RL)** | **~$50** | **~$331** | **~$1,010** |
+| **Total (with RL)** | **~$50** | **~$343** | **~$1,022** |
 | **Total cost** | **~$50** | **~$290-320** | **~$1,010-1,110** |
 
 ---
@@ -518,19 +564,19 @@ This step is **optional** — skip to stay under $300.
 ## Recommended execution order
 
 ```
-Step 1   Retrain tokenizer (FineWeb-Edu + SEC + think tokens)    ~$0.30
-Step 2   Tokenize 3 data sources (fineweb, sec, openhermes)      ~$16
-Step 3   Update dataloader.py (weighted 3-source loader)
+Step 1   Retrain tokenizer (FineWeb-Edu + SEC + code + think tokens)  ~$0.30
+Step 2   Tokenize 4 sources (fineweb + sec + openhermes + code)        ~$20
+Step 3   Update dataloader.py (weighted 4-source loader)
 Step 4   Edit train_gpt.py (n_layer=20, block_size=2048)
-Step 5   Pretrain 250M on 35B tokens -- 4x H100                  ~$256
-Step 6   Generate finance CoT via API (5-10K examples)           ~$10-20
-Step 7   Combine SFT data (FinCoT + generated CoT + SmolTalk)
-Step 8   SFT training                                             ~$8
-Step 9   Evaluate (majority voting + FinanceBench + AdaptLLM)    ~$4
-Step 10  [Optional] GRPO RL on FinQA (50-100 steps, 1x H100)    ~$8
-                                                          --------
-                                                          ~$294-$312
+Step 5   Pretrain 250M on 37B tokens -- 4x H100 (~16.5h)              ~$264
+Step 6   Generate finance CoT (75K examples, 3 traces/problem)         ~$30
+Step 7   Generate finance code SFT (7.5K examples)                     ~$5
+Step 8   Combine SFT data (FinCoT + CoT + code + Finance-Alpaca + SmolTalk)
+Step 9   SFT with LoRA (rank=256, alpha=512, all layers, 1 epoch)      ~$8
+Step 10  Evaluate (majority voting + FinanceBench + AdaptLLM)          ~$4
+Step 11  [Optional] RL on FinQA (REINFORCE, full epoch, ~312 steps)    ~$12
+                                                                 --------
+                                                                 ~$331-$343
 ```
 
-> For strict sub-$300: 5K CoT examples with GPT-4o mini (~$10) and skip Step 10 → ~$294.
-> With GRPO (Step 10): ~$302–$312 — slightly over but delivers better numerical reasoning.
+> Both options land comfortably under $350 with $7–$19 buffer.

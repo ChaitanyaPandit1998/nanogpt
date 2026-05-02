@@ -16,16 +16,23 @@ Pipeline:
 
 Usage:
   # Test with GitHub only (fast, no credentials needed)
-  python prepare_code_data.py --source github --output-file code_test.jsonl
+  python prepare_code_data.py --source github
 
-  # Full run (all sources)
-  python prepare_code_data.py --output-file code_train.jsonl
+  # Full run (all sources) — output to /workspace/data/raw/code_train.jsonl
+  python prepare_code_data.py
 
   # Resume interrupted run
-  python prepare_code_data.py --output-file code_train.jsonl --resume
+  python prepare_code_data.py --resume
 
   # Cap The Stack for testing
-  python prepare_code_data.py --source stack --stack-limit 1000 --output-file code_test.jsonl
+  python prepare_code_data.py --source stack --stack-limit 1000
+
+  # Custom paths
+  python prepare_code_data.py --output-file /workspace/data/raw/code_train.jsonl \
+                               --clone-dir /workspace/finance_repos
+
+Output: /workspace/data/raw/code_train.jsonl (default)
+Clones: /workspace/finance_repos/ (default)
 
 Requirements:
   pip install datasets tqdm kaggle   # kaggle only needed for --source kaggle
@@ -477,14 +484,17 @@ def save_checkpoint(path: str, state: dict):
 
 def main():
     parser = argparse.ArgumentParser(description="Collect finance Python code for pretraining")
-    parser.add_argument("--output-file",  default="code_train.jsonl",  help="Output JSONL file")
-    parser.add_argument("--source",       default="all",               help="github | stack | kaggle | all")
-    parser.add_argument("--clone-dir",    default="/tmp/finance_repos", help="Where to clone GitHub repos")
+    parser.add_argument("--output-file",  default="/workspace/data/raw/code_train.jsonl", help="Output JSONL file")
+    parser.add_argument("--source",       default="all",                                   help="github | stack | kaggle | all")
+    parser.add_argument("--clone-dir",    default="/workspace/finance_repos",              help="Where to clone GitHub repos")
     parser.add_argument("--stack-limit",  type=int, default=200_000,   help="Max files to stream from The Stack")
     parser.add_argument("--min-lines",    type=int, default=10,         help="Min lines per file")
     parser.add_argument("--max-lines",    type=int, default=5000,       help="Max lines per file")
     parser.add_argument("--resume",       action="store_true",          help="Resume from checkpoint")
     args = parser.parse_args()
+
+    # Ensure output directory exists
+    Path(args.output_file).parent.mkdir(parents=True, exist_ok=True)
 
     sources = {s.strip() for s in args.source.split(",")} if args.source != "all" else {"github", "stack", "kaggle"}
     checkpoint_path = args.output_file.replace(".jsonl", "_code_checkpoint.json")

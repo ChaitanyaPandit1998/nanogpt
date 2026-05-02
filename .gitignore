@@ -1,18 +1,35 @@
 # Virtual environment
 venv/
 
-# Pretraining data shards (~20 GB)
+# ---------------------------------------------------------------------------
+# Generated data — all stored under /workspace/ on RunPod, not in the repo
+
+# Pretraining shards (original + v2)
 edu_fineweb10B/
+pretrain_data/
+
+# Raw data files before tokenization
+data/
+*.jsonl
 
 # Training checkpoints
 log/
+log_v2/
 sft_checkpoints/
+sft_checkpoints_v2/
+chatrl_checkpoints/
 rl_checkpoints/
 
-# SFT data exports
-chat_train.jsonl
-chat_val.jsonl
+# Trained tokenizer artefacts
+tokenizer_v2/
 
+# Checkpoint state files (resume markers)
+*_checkpoint.json
+
+# Cloned GitHub repos used by prepare_code_data.py
+finance_repos/
+
+# ---------------------------------------------------------------------------
 # Python cache
 __pycache__/
 *.pyc

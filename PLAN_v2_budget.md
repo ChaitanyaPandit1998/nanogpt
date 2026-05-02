@@ -6,6 +6,36 @@
 
 ---
 
+## RunPod directory structure
+
+All generated data lives under `/workspace/` (persistent volume). The git repo stays clean.
+
+```
+/workspace/
+├── blk-gpt/                          ← git repo (code only)
+│
+├── data/
+│   ├── sft/
+│   │   ├── chat_train.jsonl          ← SmolTalk (from prepare_sft_data.py)
+│   │   ├── chat_finance_cot.jsonl    ← CoT output (from generate_finance_cot.py)
+│   │   ├── chat_finance_code.jsonl   ← Code SFT output (from generate_finance_code.py)
+│   │   └── chat_all_train.jsonl      ← Combined SFT file (cat of all above)
+│   └── raw/
+│       └── code_train.jsonl          ← Raw code text (TEMPORARY — delete after sharding)
+│
+├── pretrain_data/
+│   ├── fineweb/                      ← FineWeb-Edu .npy shards
+│   ├── sec/                          ← PleIAs/SEC .npy shards
+│   └── code/                         ← Python code .npy shards
+│
+├── finance_repos/                    ← Cloned GitHub repos (prepare_code_data.py)
+├── tokenizer_v2/                     ← Retrained tokenizer
+├── log_v2/                           ← Pretraining checkpoints
+└── sft_checkpoints_v2/               ← SFT checkpoints
+```
+
+---
+
 ## What changes from the full plan
 
 | Decision | Full Plan | Budget Plan (~$350) | Why |
@@ -346,22 +376,51 @@ Run `tok_train.py` with the mixed corpus. Register `<think>` and `</think>` as
 special tokens alongside existing chat tokens (`<|user|>`, `<|assistant|>`).
 
 ```bash
+cd /workspace/blk-gpt
+
 python tok_train.py \
   --vocab-size 32768 \
   --max-chars 2000000000 \
-  --output-dir tokenizer_v2/
+  --output-dir /workspace/tokenizer_v2/
 ```
 
-Verify: `python tok_eval.py --tokenizer-dir tokenizer_v2/ --include-fwe`
+Verify: `python tok_eval.py --tokenizer-dir /workspace/tokenizer_v2/ --include-fwe`
 
 ---
 
-### STEP 2 -- Tokenize 3 data sources (~4 hours, ~$16)
+### STEP 2 -- Collect and tokenize all pretraining sources (~5 hours, ~$20)
 
+**2a — Collect finance Python code (runs locally or on RunPod):**
 ```bash
-python fineweb.py --source fineweb    --tokenizer-dir tokenizer_v2/ --output-dir /workspace/pretrain_data/fineweb/
-python fineweb.py --source sec        --tokenizer-dir tokenizer_v2/ --output-dir /workspace/pretrain_data/sec/
-python fineweb.py --source openhermes --tokenizer-dir tokenizer_v2/ --output-dir /workspace/pretrain_data/openhermes/
+# No credentials needed for GitHub-only test
+python prepare_code_data.py --source github
+
+# Full run (The Stack requires: huggingface-cli login)
+python prepare_code_data.py
+
+# Output: /workspace/data/raw/code_train.jsonl
+```
+
+**2b — Tokenize all 4 sources into shards:**
+```bash
+# FineWeb-Edu
+python fineweb.py --source fineweb \
+  --tokenizer-dir /workspace/tokenizer_v2/ \
+  --output-dir /workspace/pretrain_data/fineweb/
+
+# PleIAs/SEC
+python fineweb.py --source sec \
+  --tokenizer-dir /workspace/tokenizer_v2/ \
+  --output-dir /workspace/pretrain_data/sec/
+
+# Python finance code (from prepare_code_data.py output)
+python fineweb.py --source code \
+  --code-data /workspace/data/raw/code_train.jsonl \
+  --tokenizer-dir /workspace/tokenizer_v2/ \
+  --output-dir /workspace/pretrain_data/code/
+
+# Free ~5-10 GB once sharding is done
+rm /workspace/data/raw/code_train.jsonl
 ```
 
 ---
@@ -372,9 +431,9 @@ Extend `DataLoaderLite` in `dataloader.py` to accept `(directory, weight)` pairs
 
 ```python
 sources = [
-    ("/workspace/pretrain_data/fineweb/",    0.71),
-    ("/workspace/pretrain_data/sec/",        0.26),
-    ("/workspace/pretrain_data/openhermes/", 0.03),
+    ("/workspace/pretrain_data/fineweb/", 0.676),
+    ("/workspace/pretrain_data/sec/",     0.243),
+    ("/workspace/pretrain_data/code/",    0.081),
 ]
 ```
 
@@ -390,16 +449,17 @@ n_layer:    int = 20     # was 12
 # Training hyperparameters
 B         = 16        # reduced from 64 -- 2048 context uses more memory
 T         = 2048
-max_steps = 66757     # 35B / 524288
-log_dir   = "log_v2/"
+max_steps = 70572     # 37B / 524288
+log_dir   = "/workspace/log_v2/"
 ```
 
 ---
 
-### STEP 5 -- Pretrain (~15-17 hours, ~$240-$272)
+### STEP 5 -- Pretrain (~16.5 hours, ~$264)
 
 ```bash
-torchrun --nproc_per_node=4 train_gpt.py --tokenizer-dir tokenizer_v2/
+cd /workspace/blk-gpt
+torchrun --nproc_per_node=4 train_gpt.py --tokenizer-dir /workspace/tokenizer_v2/
 ```
 
 Monitor: loss ~10 -> ~5 in first 100 steps; val loss below 5.0 at step 250;
@@ -408,50 +468,80 @@ Checkpoints saved every 2,500 steps -- resume is automatic if interrupted.
 
 ---
 
-### STEP 6 -- Generate finance CoT data via API (~$10-20)
+### STEP 6 -- Generate finance CoT data via API (~$30)
 
-Run `generate_finance_cot.py` against FinQA + TAT-QA train splits.
-Target: 5-10K examples with `<think>` reasoning traces.
-Include self-correction in ~20% of examples (Journey Learning).
+```bash
+cd /workspace/blk-gpt
 
-Output: `chat_finance_cot.jsonl`
+# Add your OpenAI key first (line 56 of generate_finance_cot.py)
+
+# Test with 50 problems first
+python generate_finance_cot.py --max-problems 50
+
+# Full run (~75K examples, ~$30)
+python generate_finance_cot.py
+
+# Resume if interrupted
+python generate_finance_cot.py --resume
+
+# Output: /workspace/data/sft/chat_finance_cot.jsonl
+```
 
 ---
 
-### STEP 7 -- Prepare and combine SFT data
+### STEP 7 -- Prepare and combine all SFT data
 
 ```bash
-python prepare_finance_sft.py  # converts FinCoT + Finance-Alpaca to JSONL
-cat chat_finance_cot.jsonl finecot.jsonl finance_alpaca.jsonl chat_train.jsonl > chat_all_train.jsonl
+cd /workspace/blk-gpt
+
+# SmolTalk
+python prepare_sft_data.py --split train --output /workspace/data/sft/chat_train.jsonl
+
+# Finance-Alpaca + FinCoT (format conversion)
+python prepare_finance_sft.py --output /workspace/data/sft/chat_finance_alpaca.jsonl
+
+# Combine all SFT sources into one file
+cat /workspace/data/sft/chat_finance_cot.jsonl \
+    /workspace/data/sft/chat_finance_alpaca.jsonl \
+    /workspace/data/sft/chat_train.jsonl \
+  > /workspace/data/sft/chat_all_train.jsonl
+
+echo "SFT total lines: $(wc -l < /workspace/data/sft/chat_all_train.jsonl)"
 ```
 
 ---
 
 ### STEP 8 -- SFT training with LoRA (~2 hours, ~$8)
 
-Use LoRA rather than full finetuning — the LoRA article found it outperforms full
-finetuning on small SFT datasets by reducing overfitting.
-
 ```bash
+cd /workspace/blk-gpt
+
 python sft_train.py \
-  --data chat_all_train.jsonl \
-  --pretrain-dir log_v2/ \
-  --tokenizer-dir tokenizer_v2/ \
+  --data /workspace/data/sft/chat_all_train.jsonl \
+  --pretrain-dir /workspace/log_v2/ \
+  --tokenizer-dir /workspace/tokenizer_v2/ \
   --lora-rank 256 \
   --lora-alpha 512 \
   --lora-all-layers
 ```
 
-Train for exactly **one epoch** — multiple passes over a static SFT dataset degrade results.
-Val BPB target: < 0.50
+Train for exactly **one epoch**. Val BPB target: < 0.50
 
 ---
 
 ### STEP 9 -- Evaluate (~1 hour, ~$4)
 
 ```bash
-python eval_finance.py --model-dir sft_checkpoints_v2/ --tokenizer-dir tokenizer_v2/
-python chat_cli.py     --model-dir sft_checkpoints_v2/ --tokenizer-dir tokenizer_v2/
+cd /workspace/blk-gpt
+
+python eval_finance.py \
+  --model-dir /workspace/sft_checkpoints_v2/ \
+  --tokenizer-dir /workspace/tokenizer_v2/
+
+# Interactive test
+python chat_cli.py \
+  --model-dir /workspace/sft_checkpoints_v2/ \
+  --tokenizer-dir /workspace/tokenizer_v2/
 ```
 
 **Test prompts:**

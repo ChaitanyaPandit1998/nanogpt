@@ -18,16 +18,21 @@ Estimated API cost: ~$30 using GPT-4o mini.
 
 Usage:
   # Full run
-  python generate_finance_cot.py --output chat_finance_cot.jsonl
+  python generate_finance_cot.py
 
   # Test with small sample first
-  python generate_finance_cot.py --output chat_finance_cot.jsonl --max-problems 50
+  python generate_finance_cot.py --max-problems 50
 
   # Resume interrupted run
-  python generate_finance_cot.py --output chat_finance_cot.jsonl --resume
+  python generate_finance_cot.py --resume
 
   # Single dataset only
-  python generate_finance_cot.py --output chat_finance_cot.jsonl --datasets finqa
+  python generate_finance_cot.py --datasets finqa
+
+  # Custom output path
+  python generate_finance_cot.py --output /workspace/data/sft/chat_finance_cot.jsonl
+
+Output: /workspace/data/sft/chat_finance_cot.jsonl (default)
 
 Dataset HuggingFace IDs (verify these before running — IDs may change):
   FinQA:     ibm/finqa
@@ -313,7 +318,7 @@ def save_checkpoint(checkpoint_path, completed_indices):
 
 def main():
     parser = argparse.ArgumentParser(description="Generate finance CoT SFT data via GPT-4o mini")
-    parser.add_argument("--output",       type=str, default="chat_finance_cot.jsonl", help="Output JSONL file")
+    parser.add_argument("--output",       type=str, default="/workspace/data/sft/chat_finance_cot.jsonl", help="Output JSONL file")
     parser.add_argument("--datasets",     type=str, default="finqa,tatqa,convfinqa",  help="Comma-separated list of datasets to use")
     parser.add_argument("--max-problems", type=int, default=None,                     help="Cap total problems (default: all)")
     parser.add_argument("--resume",       action="store_true",                        help="Resume from checkpoint if it exists")
@@ -321,6 +326,10 @@ def main():
     args = parser.parse_args()
 
     random.seed(args.seed)
+
+    # Ensure output directory exists
+    import os
+    os.makedirs(os.path.dirname(os.path.abspath(args.output)), exist_ok=True)
 
     # Validate API key
     if OPENAI_API_KEY == "YOUR_OPENAI_API_KEY_HERE":

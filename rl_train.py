@@ -36,7 +36,7 @@ from common import (
     print0, autodetect_device_type,
     compute_init, compute_cleanup,
 )
-from checkpoint_manager import save_checkpoint, build_model, find_last_step
+from checkpoint_manager import save_checkpoint, load_checkpoint, build_model, find_last_step
 
 # ---------------------------------------------------------------------------
 # CLI
@@ -217,12 +217,32 @@ for group in optimizer.param_groups:
     group["initial_lr"] = group["lr"]
 
 # ---------------------------------------------------------------------------
+# Resume from existing RL checkpoint if one exists in checkpoint_dir.
+# If no RL checkpoint is found, training starts fresh from the SFT model.
+import os as _os
+_os.makedirs(args.checkpoint_dir, exist_ok=True)
+
+start_step = 0
+try:
+    rl_resume_step = find_last_step(args.checkpoint_dir)
+    print0(f"Found RL checkpoint at step {rl_resume_step} — resuming...")
+    rl_model_data, _, rl_meta = load_checkpoint(
+        args.checkpoint_dir, rl_resume_step, device,
+        load_optimizer=False,  # optimizer state not saved for RL
+        rank=0,
+    )
+    model.load_state_dict(rl_model_data)
+    start_step = rl_meta.get("step", rl_resume_step)
+    print0(f"Resumed RL from step {start_step}")
+except (FileNotFoundError, ValueError):
+    print0("No RL checkpoint found — starting fresh from SFT model.")
+
+# ---------------------------------------------------------------------------
 # Log file (rank 0 only)
 if master_process:
-    import os as _os
-    _os.makedirs(args.checkpoint_dir, exist_ok=True)
     log_file = _os.path.join(args.checkpoint_dir, "log.txt")
-    with open(log_file, "w") as _f:
+    # Append if resuming so previous log entries are preserved
+    with open(log_file, "a" if start_step > 0 else "w") as _f:
         pass
 else:
     log_file = None
@@ -301,7 +321,7 @@ step_counter = [0]  # mutable so get_rollouts() closure can read current step
 rollout_iter = get_rollouts()
 zero_reward_streak = 0   # consecutive steps with mean_reward == 0 (no learning signal)
 
-for step in range(num_steps):
+for step in range(start_step, num_steps):
     step_counter[0] = step
 
     # ---- Evaluation: pass@1 on val set ----

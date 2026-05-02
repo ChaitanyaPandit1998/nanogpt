@@ -23,14 +23,17 @@ from tokenizer import get_tokenizer
 # CLI
 
 parser = argparse.ArgumentParser(description="Chat with a trained nanogpt model")
-parser.add_argument("--model-dir",    type=str, required=True, help="Checkpoint directory (log/ or sft_checkpoints/)")
-parser.add_argument("--step",         type=int, default=None,  help="Checkpoint step to load (default: last)")
-parser.add_argument("--prompt",       type=str, default="",    help="One-shot prompt: print one response and exit")
-parser.add_argument("--temperature",  type=float, default=0.6, help="Sampling temperature (default: 0.6)")
-parser.add_argument("--top-k",        type=int, default=50,    help="Top-k sampling (default: 50, 0=disabled)")
-parser.add_argument("--max-tokens",   type=int, default=256,   help="Max new tokens per response (default: 256)")
-parser.add_argument("--tokenizer-dir",type=str, default="tokenizer", help="Directory containing tokenizer.pkl (default: tokenizer/)")
-parser.add_argument("--device-type",  type=str, default="",   help="cuda|mps|cpu (empty = autodetect)")
+parser.add_argument("--model-dir",       type=str, required=True, help="Checkpoint directory (log/ or sft_checkpoints/)")
+parser.add_argument("--step",            type=int, default=None,  help="Checkpoint step to load (default: last)")
+parser.add_argument("--prompt",          type=str, default="",    help="One-shot prompt: print one response and exit")
+parser.add_argument("--temperature",     type=float, default=0.6, help="Sampling temperature (default: 0.6)")
+parser.add_argument("--top-k",           type=int, default=50,    help="Top-k sampling (default: 50, 0=disabled)")
+parser.add_argument("--max-tokens",      type=int, default=256,   help="Max new tokens per response (default: 256)")
+parser.add_argument("--tokenizer-dir",   type=str, default="tokenizer", help="Directory containing tokenizer.pkl (default: tokenizer/)")
+parser.add_argument("--device-type",     type=str, default="",    help="cuda|mps|cpu (empty = autodetect)")
+parser.add_argument("--system-prompt",   type=str, default=None,  help="System prompt prepended to every conversation. "
+                                                                        "Defaults to the finance CoT prompt when using the v2 model.")
+parser.add_argument("--no-system-prompt", action="store_true",    help="Disable the default system prompt entirely.")
 args = parser.parse_args()
 
 # ---------------------------------------------------------------------------
@@ -44,6 +47,24 @@ model.eval()
 
 engine    = Engine(model)
 tokenizer = get_tokenizer(args.tokenizer_dir)
+
+# ---------------------------------------------------------------------------
+# System prompt — activates <think> tag reasoning in the v2 finance model.
+# Trained on FinCoT + generated CoT data that used this exact prompt.
+# Pass --no-system-prompt to disable, or --system-prompt "..." to override.
+
+_DEFAULT_SYSTEM_PROMPT = (
+    "You are a financial analyst assistant. "
+    "Think through problems step by step before giving your final answer. "
+    "For numerical questions, show your calculations inside <think> tags."
+)
+
+if args.no_system_prompt:
+    SYSTEM_PROMPT = ""
+elif args.system_prompt is not None:
+    SYSTEM_PROMPT = args.system_prompt
+else:
+    SYSTEM_PROMPT = _DEFAULT_SYSTEM_PROMPT
 
 # ---------------------------------------------------------------------------
 # Special tokens (nanochat convention)
@@ -60,9 +81,20 @@ assistant_end   = tokenizer.encode_special("<|assistant_end|>")
 print("\nnanogpt Chat")
 print("-" * 50)
 print("Type 'quit' or 'exit' to end   |   'clear' to reset conversation")
+if SYSTEM_PROMPT:
+    print(f"System prompt active (--no-system-prompt to disable)")
 print("-" * 50)
 
-conversation_tokens: list[int] = [bos]
+
+def _initial_tokens() -> list[int]:
+    """Build the starting token list: BOS + optional system prompt."""
+    tokens = [bos]
+    if SYSTEM_PROMPT:
+        tokens.extend(tokenizer.encode(SYSTEM_PROMPT))
+    return tokens
+
+
+conversation_tokens: list[int] = _initial_tokens()
 
 generate_kwargs = dict(
     num_samples   = 1,
@@ -88,7 +120,7 @@ while True:
         break
 
     if user_input.lower() == "clear":
-        conversation_tokens = [bos]
+        conversation_tokens = _initial_tokens()
         print("Conversation cleared.")
         continue
 

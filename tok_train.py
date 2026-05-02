@@ -232,6 +232,41 @@ def _is_valid_code(code: str) -> bool:
     return sum(s in code for s in signals) >= 2
 
 
+# Finance library imports — strongest signal for finance code
+_FINANCE_CODE_IMPORTS = [
+    "yfinance", "pandas_datareader", "quantlib", "QuantLib",
+    "pyfolio", "ffn", "quantstats", "alphalens", "empyrical",
+    "mplfinance", "backtrader", "zipline", "riskfolio",
+]
+
+# Finance-specific variable/function name patterns
+_FINANCE_CODE_PATTERNS = [
+    "sharpe", "portfolio", "drawdown", "volatility",
+    "risk_free", "annualized", "cumulative_return",
+    "stock_price", "dividend", "equity", "alpha",
+    "beta", "hedge", "backtest",
+]
+
+
+def _is_finance_python_code(code: str) -> bool:
+    """Return True if the Python code contains finance-specific content.
+
+    Different from _is_finance_python_question() which checks natural language.
+    This checks the actual code for finance library imports or finance patterns.
+
+    Two paths to pass:
+      1. Code imports a finance library (strongest, single signal sufficient)
+      2. Code contains >= 2 finance-specific variable/function name patterns
+    """
+    # Path 1 — explicit finance library import
+    for lib in _FINANCE_CODE_IMPORTS:
+        if f"import {lib}" in code or f"from {lib}" in code:
+            return True
+    # Path 2 — finance patterns in identifiers/variable names
+    code_lower = code.lower()
+    return sum(1 for p in _FINANCE_CODE_PATTERNS if p in code_lower) >= 2
+
+
 def _stream_stackexchange(char_limit: int, doc_cap: int) -> None:
     """Stream Python finance code extracted from Stack Exchange Q&A answers.
 
@@ -296,9 +331,14 @@ def _stream_stackexchange(char_limit: int, doc_cap: int) -> None:
 
 
 def _stream_kaggle(char_limit: int, doc_cap: int):
-    """Stream Python code from Kaggle finance notebooks.
+    """Stream Python finance code from Kaggle notebooks.
 
     Optional — requires KAGGLE_USERNAME + KAGGLE_KEY environment variables.
+
+    Three-layer filter (mirrors Stack Exchange approach):
+      Layer 1: Notebook title must contain finance keywords
+      Layer 2: Extracted code must contain finance imports or patterns
+      Layer 3: Code must pass _is_valid_code() and have >= 3 code cells
     """
     username = os.environ.get("KAGGLE_USERNAME")
     key      = os.environ.get("KAGGLE_KEY")
@@ -314,27 +354,46 @@ def _stream_kaggle(char_limit: int, doc_cap: int):
         print(f"  [Kaggle] Auth failed: {e}")
         return
 
-    KEYWORDS = ["finance", "stock", "portfolio", "trading", "quantitative"]
-    nchars  = 0
-    tmp_dir = "/tmp/kaggle_tok_notebooks"
+    SEARCH_KEYWORDS = ["finance", "stock", "portfolio", "trading", "quantitative",
+                       "yfinance", "sharpe", "backtest"]
+    nchars   = 0
+    kept     = 0
+    scanned  = 0
+    seen_refs = set()           # deduplicate across keyword searches
+    tmp_dir  = "/tmp/kaggle_tok_notebooks"
     os.makedirs(tmp_dir, exist_ok=True)
 
     pbar = tqdm(total=char_limit, unit="char", unit_scale=True, desc="Kaggle")
 
-    for keyword in KEYWORDS:
+    for keyword in SEARCH_KEYWORDS:
         if nchars >= char_limit:
             break
         try:
             kernels = kaggle.api.kernels_list(
-                search=keyword, language="python", page_size=200
+                search=keyword, language="python",
+                sort_by="voteCount",   # top-voted = higher quality
+                page_size=200,
             )
-        except Exception:
+        except Exception as e:
+            print(f"  [Kaggle] Search '{keyword}' failed: {e}")
             continue
 
         for kernel in kernels:
             if nchars >= char_limit:
                 break
-            ref  = kernel.ref
+
+            ref = kernel.ref
+            if ref in seen_refs:    # skip duplicates across keyword searches
+                continue
+            seen_refs.add(ref)
+            scanned += 1
+
+            # Layer 1: notebook title must contain finance keywords
+            title = (getattr(kernel, "title", "") or "").lower()
+            if not any(kw in title for kw in _FINANCE_MARKERS):
+                continue
+
+            # Download the notebook
             dest = os.path.join(tmp_dir, ref.replace("/", "__"))
             os.makedirs(dest, exist_ok=True)
             try:
@@ -344,28 +403,55 @@ def _stream_kaggle(char_limit: int, doc_cap: int):
 
             for nb_path in Path(dest).rglob("*.ipynb"):
                 try:
-                    nb   = json.load(open(nb_path, encoding="utf-8"))
-                    code = "\n\n".join(
-                        "".join(cell.get("source", []))
-                        for cell in nb.get("cells", [])
-                        if cell.get("cell_type") == "code"
-                    ).strip()
+                    nb = json.load(open(nb_path, encoding="utf-8",
+                                        errors="replace"))
                 except Exception:
                     continue
 
+                # Extract non-empty code cells
+                code_cells = [
+                    "".join(cell.get("source", [])).strip()
+                    for cell in nb.get("cells", [])
+                    if cell.get("cell_type") == "code"
+                    and "".join(cell.get("source", [])).strip()
+                ]
+
+                # Layer 3a: require at least 3 non-empty code cells
+                # (fewer = stub/demo notebook, not a real analysis)
+                if len(code_cells) < 3:
+                    continue
+
+                code = "\n\n".join(code_cells)
+
+                # Layer 2: code must contain finance imports or patterns
+                if not _is_finance_python_code(code):
+                    continue
+
+                # Layer 3b: basic Python structure check
                 if not _is_valid_code(code):
                     continue
+
                 if len(code) > doc_cap:
                     code = code[:doc_cap]
 
                 nchars += len(code)
+                kept   += 1
                 pbar.update(len(code))
                 yield code
+
+                if kept % 500 == 0:
+                    pbar.set_postfix({
+                        "kept": kept,
+                        "scanned": scanned,
+                        "yield%": f"{kept / max(1, scanned) * 100:.1f}%",
+                    })
 
                 if nchars >= char_limit:
                     break
 
     pbar.close()
+    print(f"  Kaggle: {kept:,} notebooks from {scanned:,} downloaded "
+          f"({kept / max(1, scanned) * 100:.1f}% yield)")
 
 
 # -----------------------------------------------------------------------------

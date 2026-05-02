@@ -280,9 +280,9 @@ class Block(nn.Module):
 
 @dataclass
 class GPTConfig:
-    block_size : int = 1024
+    block_size : int = 2048   # nanogpt 2.0: increased from 1024 for finance docs
     vocab_size : int = 50257
-    n_layer    : int = 12
+    n_layer    : int = 20     # nanogpt 2.0: increased from 12 → ~250M params
     n_head     : int = 12
     n_kv_head  : int = 4     # GQA: must evenly divide n_head (e.g. 12//4 = 3 Q heads per KV head)
     n_embd     : int = 768
@@ -685,24 +685,57 @@ if __name__ == '__main__':
 
     import argparse as _argparse
     _parser = _argparse.ArgumentParser(add_help=False)
-    _parser.add_argument("--data-dir", type=str, default="edu_fineweb10B",
-                         help="Path to directory containing .npy shard files (default: edu_fineweb10B)")
+    _parser.add_argument("--data-dir", type=str, default=None,
+                         help="Single shard directory (backward compat). "
+                              "Use --data-sources for multi-source weighted mixing.")
+    _parser.add_argument("--data-sources", type=str, default=None,
+                         help="Weighted multi-source shards. Format: "
+                              "'dir1:w1,dir2:w2,...' e.g. "
+                              "'/workspace/pretrain_data/fineweb/:0.676,"
+                              "/workspace/pretrain_data/sec/:0.243,"
+                              "/workspace/pretrain_data/code/:0.081'")
+    _parser.add_argument("--log-dir", type=str, default="/workspace/log_v2/",
+                         help="Directory for checkpoints and logs (default: /workspace/log_v2/)")
     _args, _ = _parser.parse_known_args()
-    DATA_DIR = _args.data_dir
+
+    # Parse data sources
+    if _args.data_sources:
+        _source_list = []
+        for part in _args.data_sources.split(","):
+            part = part.strip()
+            colon = part.rfind(":")
+            _source_list.append((part[:colon], float(part[colon + 1:])))
+        _multi_source = True
+    elif _args.data_dir:
+        _multi_source = False
+        DATA_DIR = _args.data_dir
+    else:
+        # Default: single-source fallback for backward compatibility
+        _multi_source = False
+        DATA_DIR = "edu_fineweb10B"
 
     total_batch_size = 524288  # ~0.5M tokens
-    B = 64                     # micro batch size
-    T = 1024                   # sequence length
+    B = 16                     # micro batch size (reduced: 2048 context needs more VRAM)
+    T = 2048                   # sequence length
     assert total_batch_size % (B * T * ddp_world_size) == 0
     grad_accum_steps = total_batch_size // (B * T * ddp_world_size)
     print0(f"total desired batch size: {total_batch_size}")
     print0(f"=> gradient accumulation steps: {grad_accum_steps}")
 
-    train_loader = DataLoaderLite(B=B, T=T, process_rank=ddp_rank, num_processes=ddp_world_size, split="train", data_root=DATA_DIR)
-    val_loader   = DataLoaderLite(B=B, T=T, process_rank=ddp_rank, num_processes=ddp_world_size, split="val",   data_root=DATA_DIR)
-    if master_process:
-        print(f"found {len(train_loader.shards)} shards for split train")
-        print(f"found {len(val_loader.shards)} shards for split val")
+    _loader_kwargs = dict(B=B, T=T, process_rank=ddp_rank, num_processes=ddp_world_size)
+    if _multi_source:
+        train_loader = DataLoaderLite(**_loader_kwargs, split="train", sources=_source_list)
+        val_loader   = DataLoaderLite(**_loader_kwargs, split="val",   sources=_source_list)
+        if master_process:
+            for d, w in _source_list:
+                print(f"  source {d}: weight {w:.3f} "
+                      f"({len([s for s in os.listdir(d) if 'train' in s])} train shards)")
+    else:
+        train_loader = DataLoaderLite(**_loader_kwargs, split="train", data_root=DATA_DIR)
+        val_loader   = DataLoaderLite(**_loader_kwargs, split="val",   data_root=DATA_DIR)
+        if master_process:
+            print(f"found {len(train_loader.shards)} shards for split train")
+            print(f"found {len(val_loader.shards)} shards for split val")
 
     # ---------------------------------------------------------------------------
     # Model
@@ -757,7 +790,7 @@ if __name__ == '__main__':
     # All param groups carry 'initial_lr'; the scheduler multiplies uniformly:
     #   group["lr"] = group["initial_lr"] * lr_multiplier
 
-    max_steps      = 19073   # ~1 epoch on 10B token dataset with 0.5M token batches
+    max_steps      = 70572   # ~1 epoch on 37B token dataset with 0.5M token batches
     warmup_steps   = 715
     warmdown_ratio = 0.65    # fraction of max_steps spent in warmdown
     final_lr_frac  = 0.1     # minimum LR as a fraction of peak LR
@@ -807,7 +840,7 @@ if __name__ == '__main__':
     # ---------------------------------------------------------------------------
     # Training loop
 
-    log_dir  = "log"
+    log_dir  = _args.log_dir
     os.makedirs(log_dir, exist_ok=True)
     log_file = os.path.join(log_dir, "log.txt")
 
@@ -831,13 +864,18 @@ if __name__ == '__main__':
         optimizer.load_state_dict(optim_data)
         start_step        = meta["step"]
         smooth_train_loss = meta.get("smooth_train_loss", 0.0)
-        # Restore data loader to exact position it was at when checkpoint was saved
-        dl_shard = meta.get("dataloader_shard", 0)
-        dl_pos   = meta.get("dataloader_position", 0)
-        train_loader.current_shard    = dl_shard
-        train_loader.tokens           = load_tokens(train_loader.shards[dl_shard])
-        train_loader.current_position = dl_pos
-        print0(f"Resumed from step {start_step} | shard {dl_shard} | position {dl_pos:,}")
+        # Restore data loader — prefer full state_dict (multi-source aware),
+        # fall back to legacy shard/position keys for old checkpoints.
+        if "dataloader_state" in meta:
+            train_loader.load_state_dict(meta["dataloader_state"])
+            print0(f"Resumed from step {start_step} | dataloader state restored")
+        else:
+            dl_shard = meta.get("dataloader_shard", 0)
+            dl_pos   = meta.get("dataloader_position", 0)
+            train_loader.current_shard    = dl_shard
+            train_loader.tokens           = load_tokens(train_loader.shards[dl_shard])
+            train_loader.current_position = dl_pos
+            print0(f"Resumed from step {start_step} | shard {dl_shard} | position {dl_pos:,}")
 
     # Append to existing log if resuming; otherwise start fresh
     with open(log_file, "a" if start_step > 0 else "w") as f:
@@ -877,6 +915,9 @@ if __name__ == '__main__':
                             "step":               step,
                             "val_loss":           val_loss_accum.item(),
                             "smooth_train_loss":  smooth_train_loss,
+                            # Full dataloader state (multi-source aware)
+                            "dataloader_state":   train_loader.state_dict(),
+                            # Legacy keys kept for backward compat with old checkpoints
                             "dataloader_shard":   train_loader.current_shard,
                             "dataloader_position":train_loader.current_position,
                             "model_config": {

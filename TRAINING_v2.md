@@ -29,9 +29,9 @@
 # Persistent volume: at least 500 GB (shards + checkpoints + data)
 ```
 
-### Step 0.2 — Clone repo and install packages
+### Step 0.2 — Clone repo and create virtual environment
 
-**Why:** All training scripts and shared utilities live in this repo.
+**Why:** All training scripts and shared utilities live in this repo. A virtual environment isolates dependencies from the system Python and avoids version conflicts.
 
 ```bash
 cd /workspace
@@ -39,14 +39,28 @@ git clone https://github.com/ChaitanyaPandit1998/nanogpt.git nanogpt
 cd nanogpt
 git checkout feature/nanogpt-2.0
 
-# Install all dependencies
+# Create and activate the virtual environment
+python3 -m venv .venv
+source .venv/bin/activate
+```
+
+> **Note:** Run `source /workspace/nanogpt/.venv/bin/activate` at the start of every new terminal session before running any training scripts.
+
+### Step 0.3 — Install packages into the virtual environment
+
+**Why:** Installing inside `.venv` keeps the RunPod system Python clean and makes the exact dependency set reproducible.
+
+```bash
+# Ensure the venv is active (prompt should show (.venv))
+pip install --upgrade pip
+
 pip install torch==2.9.1 --extra-index-url https://download.pytorch.org/whl/cu128
 pip install rustbpe tiktoken datasets openai tqdm python-dotenv
 pip install kernels  # Flash Attention 3 via pre-built binary
 pip install kaggle   # optional — only needed for Kaggle data source
 ```
 
-### Step 0.3 — Configure credentials
+### Step 0.4 — Configure credentials
 
 **Why:** OpenAI key is needed for SFT data generation; Kaggle key improves code data quality.
 
@@ -59,7 +73,7 @@ nano .env
 # KAGGLE_KEY=your-key             (optional)
 ```
 
-### Step 0.4 — Create workspace directories
+### Step 0.5 — Create workspace directories
 
 **Why:** Keeps generated data separate from the repo; all paths used by training scripts.
 

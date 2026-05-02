@@ -53,13 +53,16 @@ parser.add_argument("--val-data",         type=str, default=None,        help="p
 parser.add_argument("--pretrain-dir",     type=str, required=True,      help="directory containing pretrain model_{step:06d}.pt / meta_{step:06d}.json")
 parser.add_argument("--pretrain-step",    type=int, default=None,        help="which pretrain step to load (default: last)")
 # Output
-parser.add_argument("--checkpoint-dir",  type=str, default="sft_checkpoints", help="where to save SFT checkpoints")
+parser.add_argument("--checkpoint-dir",  type=str, default="/workspace/sft_checkpoints_v2/", help="where to save SFT checkpoints")
 parser.add_argument("--save-every",      type=int, default=2500,         help="save a checkpoint every N steps (always saves at the final step)")
 # Training horizon
-parser.add_argument("--num-steps",       type=int, default=-1,           help="total optimization steps (-1 = auto: ~1 epoch over training data)")
+parser.add_argument("--max-epochs",      type=int, default=1,            help="number of passes over the training data (default: 1). "
+                                                                              "Multi-epoch training on static SFT data degrades quality via overfitting — "
+                                                                              "keep at 1 unless you have a strong reason to increase it.")
+parser.add_argument("--num-steps",       type=int, default=-1,           help="override total steps (-1 = auto-compute from --max-epochs)")
 # Batch
 parser.add_argument("--batch-size",      type=int, default=8,            help="micro-batch size (sequences per device per step)")
-parser.add_argument("--seq-len",         type=int, default=1024,         help="packed sequence length T")
+parser.add_argument("--seq-len",         type=int, default=2048,         help="packed sequence length T (default: 2048, matches block_size)")
 parser.add_argument("--grad-accum",      type=int, default=1,            help="gradient accumulation steps")
 # LR schedule (trapezoidal, same shape as pretrain but progress-based 0→1)
 parser.add_argument("--lr-scale",        type=float, default=0.1,        help="multiply pretrain base LRs by this factor (0.1 = 10× lower than pretrain)")
@@ -245,15 +248,28 @@ if args.val_data:
     token_bytes = build_token_bytes(device)
     print0(f"  {len(val_convs):,} validation conversations")
 
-# Auto-compute num_steps (~1 epoch) by estimating total training tokens
+# Compute num_steps from --max-epochs (default 1) or use --num-steps if explicitly set.
+#
+# One epoch = one full pass over the training conversations.
+# Multi-epoch training on a static SFT dataset causes overfitting — keep max_epochs=1.
+# The estimate is based on average conversation length × number of conversations.
 num_steps = args.num_steps
 if num_steps < 0:
     sample = min(200, len(train_convs))
     avg_len = sum(len(tokenize_conversation(c)[0]) for c in train_convs[:sample]) / sample
     total_tokens = avg_len * len(train_convs)
     tokens_per_step = args.batch_size * args.seq_len * ddp_world_size * args.grad_accum
-    num_steps = max(1, int(total_tokens / tokens_per_step))
-    print0(f"Auto-computed num_steps = {num_steps} (~1 epoch, ~{total_tokens/1e6:.1f}M tokens)")
+    steps_per_epoch = max(1, int(total_tokens / tokens_per_step))
+    num_steps = steps_per_epoch * args.max_epochs
+    if args.max_epochs == 1:
+        print0(f"Auto-computed num_steps = {num_steps} "
+               f"(1 epoch, ~{total_tokens/1e6:.1f}M tokens, "
+               f"seq_len={args.seq_len})")
+    else:
+        print0(f"Auto-computed num_steps = {num_steps} "
+               f"({args.max_epochs} epochs × {steps_per_epoch} steps/epoch, "
+               f"~{total_tokens * args.max_epochs / 1e6:.1f}M total tokens)")
+    print0("  NOTE: max_epochs > 1 risks overfitting on static SFT data.")
 
 train_loader = make_data_generator(train_convs, args.seq_len, ddp_rank, ddp_world_size, args.batch_size)
 

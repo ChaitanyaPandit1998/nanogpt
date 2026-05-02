@@ -35,8 +35,8 @@
 
 ```bash
 cd /workspace
-git clone https://github.com/ChaitanyaPandit1998/nanogpt.git blk-gpt
-cd blk-gpt
+git clone https://github.com/ChaitanyaPandit1998/nanogpt.git nanogpt
+cd nanogpt
 git checkout feature/nanogpt-2.0
 
 # Install all dependencies
@@ -84,7 +84,7 @@ like EBITDA, 10-K, and GAAP. The v2 tokenizer adds SEC text and Python code so t
 become single tokens, improving both compression and model quality.
 
 ```bash
-cd /workspace/blk-gpt
+cd /workspace/nanogpt
 
 python tok_train.py \
   --vocab-size 32768 \
@@ -121,7 +121,7 @@ scripts at inference time. This step collects ~160–200M chars from GitHub repo
 Stack Exchange, and optionally Kaggle — no pre-download needed for GitHub.
 
 ```bash
-cd /workspace/blk-gpt
+cd /workspace/nanogpt
 
 # GitHub only (fast, ~5 min, no credentials needed)
 python prepare_code_data.py \
@@ -204,7 +204,7 @@ document structure, Python syntax, and general reasoning patterns. Without this,
 the model has no understanding of any domain. This is the most expensive step.
 
 ```bash
-cd /workspace/blk-gpt
+cd /workspace/nanogpt
 
 # Multi-source weighted pretraining (4× H100 recommended)
 torchrun --nproc_per_node=4 train_gpt.py \
@@ -332,7 +332,7 @@ finance assistant that follows instructions, uses <think> tags for reasoning, ge
 Python code, and understands the question-answer format.
 
 ```bash
-cd /workspace/blk-gpt
+cd /workspace/nanogpt
 
 python sft_train.py \
   --data /workspace/data/sft/chat_all_train.jsonl \

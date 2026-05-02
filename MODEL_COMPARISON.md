@@ -9,7 +9,7 @@
 
 | Model | Params | Layers | Hidden dim | Heads (Q/KV) | Context | Norm | Activation |
 |---|---|---|---|---|---|---|---|
-| **nanogpt 2.0** | **~250M** | **20** | **768** | **12 / 4 (GQA)** | **2048** | **RMSNorm** | **SwiGLU** |
+| **nanogpt 2.0** | **~250M** | **20** | **768** | **12 / 4 (GQA)** | **2048** | **RMSNorm** | **ReLU²** |
 | GPT-2 Medium | 345M | 24 | 1024 | 16 / 16 | 1024 | LayerNorm | GELU |
 | GPT-2 Small | 117M | 12 | 768 | 12 / 12 | 1024 | LayerNorm | GELU |
 | SmolLM 360M | 360M | 32 | 960 | 15 / 5 (GQA) | 2048 | RMSNorm | SwiGLU |
@@ -23,7 +23,7 @@
 **Takeaways:**
 - nanogpt 2.0 is closest in scale to GPT-2 Medium and SmolLM 360M
 - GQA (12Q / 4KV) matches the modern trend set by LLaMA 3 and Mistral — GPT-2 predates this
-- SwiGLU + RMSNorm is now the de-facto standard; nanogpt 2.0 aligns with it
+- ReLU² (nanogpt 2.0) differs from the SwiGLU standard used by LLaMA/Qwen — it's sparser, faster (no exp() call), and avoids the gating overhead of SwiGLU
 - 2048 context is modest but consistent with Phi-2 and BloombergGPT at the same era
 - The main gap vs modern small models (Qwen 2.5, SmolLM) is context length (2048 vs 32K+)
 
@@ -118,7 +118,7 @@
 
 | Dimension | nanogpt 2.0 | Verdict |
 |---|---|---|
-| Architecture modernity | RoPE, GQA, RMSNorm, SwiGLU, Flash Attn 3 | On par with 2024 models |
+| Architecture modernity | RoPE, GQA, RMSNorm, ReLU², Flash Attn 3 | On par with 2024 models; ReLU² is a deliberate speed/sparsity trade-off over SwiGLU |
 | Parameter scale | ~250M | Small but intentional; comparable to GPT-2 Medium / SmolLM 360M |
 | Vocab size | 50,257 | Matches GPT-2; above LLaMA 2 / Mistral (32K); good for English finance + code |
 | Context length | 2048 | Short vs current standard (32K+); sufficient for finance Q&A |

@@ -40,7 +40,10 @@ from checkpoint_manager import save_checkpoint, build_model, find_last_step
 
 # ---------------------------------------------------------------------------
 # CLI
-parser = argparse.ArgumentParser(description="GRPO RL fine-tuning on GSM8K")
+parser = argparse.ArgumentParser(description="GRPO RL fine-tuning on GSM8K or FinQA")
+# Task
+parser.add_argument("--task",             type=str, default="gsm8k",  choices=["gsm8k", "finqa"],
+                    help="RL task: gsm8k (math) or finqa (finance numerical reasoning, default: gsm8k)")
 # Model
 parser.add_argument("--sft-dir",          type=str, required=True,   help="directory with SFT checkpoint (or pretrain dir if skipping SFT)")
 parser.add_argument("--sft-step",         type=int, default=None,     help="SFT step to load (default: last)")
@@ -48,7 +51,7 @@ parser.add_argument("--sft-step",         type=int, default=None,     help="SFT 
 parser.add_argument("--checkpoint-dir",   type=str, default="rl_checkpoints", help="where to save RL checkpoints")
 parser.add_argument("--save-every",       type=int, default=60,        help="save checkpoint every N steps")
 # Training horizon
-parser.add_argument("--num-epochs",       type=int, default=1,         help="epochs over the GSM8K training set")
+parser.add_argument("--num-epochs",       type=int, default=1,         help="epochs over the training set")
 parser.add_argument("--examples-per-step",type=int, default=16,        help="GSM8K examples per optimizer step (across all ranks)")
 # Sampling
 parser.add_argument("--num-samples",      type=int, default=8,         help="rollouts generated per example (must be divisible by batch-size)")
@@ -97,38 +100,44 @@ def encode_prompt(question: str) -> list[int]:
     return tokenizer.render_for_completion(conversation)
 
 # ---------------------------------------------------------------------------
-# GSM8K dataset
-try:
-    from datasets import load_dataset as _hf_load
-    _gsm8k = _hf_load("gsm8k", "main")
-    train_data = [{"question": r["question"], "answer": r["answer"]} for r in _gsm8k["train"]]
-    val_data   = [{"question": r["question"], "answer": r["answer"]} for r in _gsm8k["test"]]
-    print0(f"GSM8K: {len(train_data)} train / {len(val_data)} val examples")
-except Exception as e:
-    raise RuntimeError(
-        f"Could not load GSM8K via HuggingFace datasets: {e}\n"
-        "Install with: pip install datasets"
-    )
+# Task dataset — GSM8K (math) or FinQA (finance numerical reasoning)
 
-
-def extract_answer(text: str) -> str | None:
-    """Extract the final numeric answer after '####' in GSM8K format."""
-    m = re.search(r"####\s*([\d,\.\-]+)", text)
-    if m:
-        return m.group(1).replace(",", "").strip()
-    return None
-
-
-def compute_reward(example: dict, generated_text: str) -> float:
-    """Return 1.0 if the generated answer matches the ground truth, else 0.0."""
-    gt  = extract_answer(example["answer"])
-    gen = extract_answer(generated_text)
-    if gt is None or gen is None:
-        return 0.0
+if args.task == "finqa":
+    from tasks.finqa import load_finqa, extract_answer, compute_reward
+    train_data = load_finqa("train")
+    val_data   = load_finqa("test")
+    print0(f"FinQA: {len(train_data)} train / {len(val_data)} val examples")
+else:
+    # GSM8K (default)
     try:
-        return 1.0 if float(gen) == float(gt) else 0.0
-    except ValueError:
-        return 0.0
+        from datasets import load_dataset as _hf_load
+        _gsm8k = _hf_load("gsm8k", "main")
+        train_data = [{"question": r["question"], "answer": r["answer"]} for r in _gsm8k["train"]]
+        val_data   = [{"question": r["question"], "answer": r["answer"]} for r in _gsm8k["test"]]
+        print0(f"GSM8K: {len(train_data)} train / {len(val_data)} val examples")
+    except Exception as e:
+        raise RuntimeError(
+            f"Could not load GSM8K via HuggingFace datasets: {e}\n"
+            "Install with: pip install datasets"
+        )
+
+    def extract_answer(text: str) -> str | None:
+        """Extract the final numeric answer after '####' in GSM8K format."""
+        m = re.search(r"####\s*([\d,\.\-]+)", text)
+        if m:
+            return m.group(1).replace(",", "").strip()
+        return None
+
+    def compute_reward(example: dict, generated_text: str) -> float:
+        """Return 1.0 if the generated answer matches the ground truth, else 0.0."""
+        gt  = extract_answer(example["answer"])
+        gen = extract_answer(generated_text)
+        if gt is None or gen is None:
+            return 0.0
+        try:
+            return 1.0 if float(gen) == float(gt) else 0.0
+        except ValueError:
+            return 0.0
 
 
 # ---------------------------------------------------------------------------

@@ -41,6 +41,10 @@ import torch
 from tqdm import tqdm
 
 from tokenizer import RustBPETokenizer
+from size_utils import load_env
+
+# Load .env credentials (KAGGLE_USERNAME, KAGGLE_KEY, etc.)
+load_env()
 
 # -----------------------------------------------------------------------------
 # CLI

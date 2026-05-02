@@ -50,7 +50,10 @@ from pathlib import Path
 
 from tqdm import tqdm
 
-from size_utils import parse_size, TokenBudget
+from size_utils import load_env, parse_size, TokenBudget
+
+# Load .env credentials (KAGGLE_USERNAME, KAGGLE_KEY, etc.)
+load_env()
 
 
 # ---------------------------------------------------------------------------

@@ -51,11 +51,15 @@ from datasets import load_dataset
 from openai import OpenAI
 from tqdm import tqdm
 
-from size_utils import format_tokens
+from size_utils import load_env, format_tokens
 
 # ---------------------------------------------------------------------------
-# !! REPLACE THIS WITH YOUR KEY before running !!
-OPENAI_API_KEY = "YOUR_OPENAI_API_KEY_HERE"
+# Credentials — loaded from .env file in the project root, then from
+# environment variables. Create a .env file (see .env.example) or export:
+#   export OPENAI_API_KEY=sk-...
+
+load_env()
+OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY", "")
 
 # ---------------------------------------------------------------------------
 # Configuration — adjust as needed
@@ -336,10 +340,13 @@ def main():
     os.makedirs(os.path.dirname(os.path.abspath(args.output)), exist_ok=True)
 
     # Validate API key
-    if OPENAI_API_KEY == "YOUR_OPENAI_API_KEY_HERE":
+    if not OPENAI_API_KEY:
         raise ValueError(
-            "Set your OpenAI API key in generate_finance_cot.py — "
-            "replace YOUR_OPENAI_API_KEY_HERE at the top of the file."
+            "OPENAI_API_KEY not set. Add it to .env in the project root:\n"
+            "  OPENAI_API_KEY=sk-...\n"
+            "Or export it in your shell:\n"
+            "  export OPENAI_API_KEY=sk-...\n"
+            "See .env.example for the full template."
         )
 
     client = OpenAI(api_key=OPENAI_API_KEY)

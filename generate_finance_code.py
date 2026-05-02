@@ -35,9 +35,15 @@ from pathlib import Path
 from openai import OpenAI
 from tqdm import tqdm
 
+from size_utils import load_env
+
 # ---------------------------------------------------------------------------
-# !! Replace with your key before running !!
-OPENAI_API_KEY = "YOUR_OPENAI_API_KEY_HERE"
+# Credentials — loaded from .env file in the project root, then from
+# environment variables. Create a .env file (see .env.example) or export:
+#   export OPENAI_API_KEY=sk-...
+
+load_env()
+OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY", "")
 
 # ---------------------------------------------------------------------------
 # Config
@@ -296,10 +302,13 @@ def main():
                         help="Resume from checkpoint")
     args = parser.parse_args()
 
-    if OPENAI_API_KEY == "YOUR_OPENAI_API_KEY_HERE":
+    if not OPENAI_API_KEY:
         raise ValueError(
-            "Set your OpenAI API key — replace YOUR_OPENAI_API_KEY_HERE "
-            "at the top of generate_finance_code.py"
+            "OPENAI_API_KEY not set. Add it to .env in the project root:\n"
+            "  OPENAI_API_KEY=sk-...\n"
+            "Or export it in your shell:\n"
+            "  export OPENAI_API_KEY=sk-...\n"
+            "See .env.example for the full template."
         )
 
     Path(args.output).parent.mkdir(parents=True, exist_ok=True)

@@ -30,6 +30,11 @@ tokenizer_v2/
 finance_repos/
 
 # ---------------------------------------------------------------------------
+# Credentials — NEVER commit .env to the repo
+.env
+*.env
+
+# ---------------------------------------------------------------------------
 # Python cache
 __pycache__/
 *.pyc

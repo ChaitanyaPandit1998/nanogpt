@@ -1,16 +1,52 @@
 """
 size_utils.py
 ~~~~~~~~~~~~~
-Shared utilities for token/size budgeting across data collection scripts.
+Shared utilities for token/size budgeting and credential loading.
 
 Used by: fineweb.py, prepare_code_data.py, prepare_sft_data.py,
-         generate_finance_cot.py
+         generate_finance_cot.py, generate_finance_code.py,
+         tok_train.py
 
 Rough conversion rules:
   1 token  ≈ 4 characters  (English text / code)
   1 GB text ≈ 250M tokens
   1B tokens ≈ 4 GB text
 """
+
+import os
+from pathlib import Path
+
+
+def load_env(env_file: str = None) -> bool:
+    """Load credentials from a .env file into os.environ.
+
+    Looks for .env in the same directory as size_utils.py (the project root)
+    unless an explicit path is provided.
+
+    Requires python-dotenv:
+        pip install python-dotenv
+
+    Returns True if a .env file was found and loaded, False otherwise.
+    Credentials already set in the environment are NOT overwritten (dotenv
+    default: override=False), so shell exports always take precedence.
+
+    Usage:
+        from size_utils import load_env
+        load_env()
+        api_key = os.environ.get("OPENAI_API_KEY", "")
+    """
+    try:
+        from dotenv import load_dotenv
+    except ImportError:
+        # python-dotenv not installed — credentials must come from the shell
+        return False
+
+    target = Path(env_file) if env_file else Path(__file__).parent / ".env"
+    if not target.exists():
+        return False
+
+    load_dotenv(target, override=False)
+    return True
 
 
 def parse_size(s: str) -> int:

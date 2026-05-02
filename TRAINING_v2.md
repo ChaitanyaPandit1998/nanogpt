@@ -101,7 +101,7 @@ become single tokens, improving both compression and model quality.
 cd /workspace/nanogpt
 
 python tok_train.py \
-  --vocab-size 32768 \
+  --vocab-size 50257 \
   --output-dir /workspace/tokenizer_v2/ \
   --multi-source
 

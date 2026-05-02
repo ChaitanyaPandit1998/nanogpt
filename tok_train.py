@@ -17,14 +17,14 @@ quality-per-char compared to the targeted sources above.
 
 Usage:
   # tokenizer_v2 — multi-source, fully streamed
-  python tok_train.py --vocab-size 32768 --output-dir /workspace/tokenizer_v2/ --multi-source
+  python tok_train.py --vocab-size 50257 --output-dir /workspace/tokenizer_v2/ --multi-source
 
   # use pre-collected code from prepare_code_data.py (better coverage)
   python tok_train.py --multi-source --code-jsonl /workspace/data/raw/code_train.jsonl \\
     --output-dir /workspace/tokenizer_v2/
 
   # original single-source (FineWeb-Edu only) — backward compatible
-  python tok_train.py --vocab-size 32768 --max-chars 2000000000 --output-dir tokenizer/
+  python tok_train.py --vocab-size 50257 --max-chars 2000000000 --output-dir tokenizer/
 
   # quick test
   python tok_train.py --vocab-size 1000 --max-chars 500000 --output-dir /tmp/test_tok
@@ -50,8 +50,8 @@ load_env()
 # CLI
 
 parser = argparse.ArgumentParser(description="Train a BPE tokenizer")
-parser.add_argument("--vocab-size",    type=int, default=32_768,
-                    help="Vocabulary size (default: 32768 = 2^15)")
+parser.add_argument("--vocab-size",    type=int, default=50_257,
+                    help="Vocabulary size (default: 50257, matching GPT-2)")
 parser.add_argument("--max-chars",     type=int, default=2_000_000_000,
                     help="Total characters — single-source mode only (default: 2B)")
 parser.add_argument("--doc-cap",       type=int, default=10_000,

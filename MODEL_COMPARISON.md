@@ -33,7 +33,7 @@
 
 | Model | Tokenizer type | Vocab size | Numbers | Multilingual |
 |---|---|---|---|---|
-| **nanogpt 2.0** | **BPE (custom, trained from scratch)** | **32,768** | Fragmented | No |
+| **nanogpt 2.0** | **BPE (custom, trained from scratch)** | **50,257** | Fragmented | No |
 | GPT-2 | BPE (tiktoken) | 50,257 | Fragmented | No |
 | SmolLM 360M | BPE | 49,152 | Fragmented | No |
 | LLaMA 2 | SentencePiece BPE | 32,000 | Fragmented | Limited |
@@ -44,7 +44,7 @@
 | Mistral 7B | SentencePiece BPE | 32,000 | Fragmented | Limited |
 
 **Takeaways:**
-- At 32,768, nanogpt 2.0's vocab is on the smaller end — LLaMA 2 / Mistral are at a similar level, but modern models trend toward 50K–150K
+- At 50,257, nanogpt 2.0 matches GPT-2's vocab size and sits comfortably above LLaMA 2 / Mistral (32K); modern frontier models trend toward 128K–152K but those serve multilingual use cases
 - The custom tokenizer trained on finance + code corpus is an advantage: tokens will align better with domain-specific terms (SEC filings, Python library names) than a general-purpose tokenizer
 - Number fragmentation is a known weakness at this vocab size — financial figures like `$2,345,678` will be split into many tokens, slightly increasing the burden on the model for numerical reasoning
 - Increasing to ~50K would be a low-cost improvement if retraining before the first run
@@ -120,7 +120,7 @@
 |---|---|---|
 | Architecture modernity | RoPE, GQA, RMSNorm, SwiGLU, Flash Attn 3 | On par with 2024 models |
 | Parameter scale | ~250M | Small but intentional; comparable to GPT-2 Medium / SmolLM 360M |
-| Vocab size | 32,768 | Below modern standard (50K–128K); functional but worth increasing |
+| Vocab size | 50,257 | Matches GPT-2; above LLaMA 2 / Mistral (32K); good for English finance + code |
 | Context length | 2048 | Short vs current standard (32K+); sufficient for finance Q&A |
 | Pretraining tokens | 37B | Low — compensated by domain focus |
 | Finance specialisation | SEC 24% of pretraining | Strongest ratio outside BloombergGPT |

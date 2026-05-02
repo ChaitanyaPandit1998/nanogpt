@@ -51,6 +51,8 @@ from datasets import load_dataset
 from openai import OpenAI
 from tqdm import tqdm
 
+from size_utils import format_tokens
+
 # ---------------------------------------------------------------------------
 # !! REPLACE THIS WITH YOUR KEY before running !!
 OPENAI_API_KEY = "YOUR_OPENAI_API_KEY_HERE"
@@ -318,11 +320,13 @@ def save_checkpoint(checkpoint_path, completed_indices):
 
 def main():
     parser = argparse.ArgumentParser(description="Generate finance CoT SFT data via GPT-4o mini")
-    parser.add_argument("--output",       type=str, default="/workspace/data/sft/chat_finance_cot.jsonl", help="Output JSONL file")
-    parser.add_argument("--datasets",     type=str, default="finqa,tatqa,convfinqa",  help="Comma-separated list of datasets to use")
-    parser.add_argument("--max-problems", type=int, default=None,                     help="Cap total problems (default: all)")
-    parser.add_argument("--resume",       action="store_true",                        help="Resume from checkpoint if it exists")
-    parser.add_argument("--seed",         type=int, default=42,                       help="Random seed")
+    parser.add_argument("--output",        type=str, default="/workspace/data/sft/chat_finance_cot.jsonl", help="Output JSONL file")
+    parser.add_argument("--datasets",      type=str, default="finqa,tatqa,convfinqa",  help="Comma-separated list of datasets to use")
+    parser.add_argument("--max-problems",  type=int, default=None,                     help="Cap source problems (default: all). Each problem → 3 examples.")
+    parser.add_argument("--max-examples",  type=int, default=None,                     help="Stop after writing this many total examples (default: no limit)")
+    parser.add_argument("--max-mb",        type=float, default=None,                   help="Stop after approximately this many MB of output (default: no limit)")
+    parser.add_argument("--resume",        action="store_true",                        help="Resume from checkpoint if it exists")
+    parser.add_argument("--seed",          type=int, default=42,                       help="Random seed")
     args = parser.parse_args()
 
     random.seed(args.seed)
@@ -369,13 +373,28 @@ def main():
     # Pre-assign Journey Learning flag (deterministic based on index)
     journey_flags = {i: (random.random() < JOURNEY_LEARNING_FRAC) for i in range(len(all_problems))}
 
+    # Size limits
+    example_cap = args.max_examples
+    byte_limit  = int(args.max_mb * 1_000_000) if args.max_mb else None
+
     # Stats tracking
     total_generated = 0
     total_discarded = 0
+    bytes_written   = 0
 
-    print(f"\nGenerating CoT traces for {len(all_problems):,} problems × 3 traces = {len(all_problems) * 3:,} API calls")
-    print(f"Output: {args.output}")
-    print(f"Checkpoint: {checkpoint_path}\n")
+    est_api_calls = len(all_problems) * 3
+    est_examples  = len(all_problems) * 3
+    est_mb        = est_examples * 900 * 4 / 1e6  # 900 tokens × 4 chars per example
+    print(f"\nGenerating CoT traces for {len(all_problems):,} problems × 3 traces")
+    print(f"  Estimated API calls : {est_api_calls:,}")
+    print(f"  Estimated examples  : {est_examples:,}")
+    print(f"  Estimated output    : ~{est_mb:.0f} MB")
+    if example_cap:
+        print(f"  Example cap         : {example_cap:,}")
+    if byte_limit:
+        print(f"  Size cap            : {args.max_mb:.0f} MB")
+    print(f"  Output              : {args.output}")
+    print(f"  Checkpoint          : {checkpoint_path}\n")
 
     with open(args.output, "a" if args.resume else "w", encoding="utf-8") as out_f:
         for idx, problem in enumerate(tqdm(all_problems, desc="Problems")):
@@ -383,16 +402,28 @@ def main():
             if idx in completed_indices:
                 continue
 
+            # Size limit checks
+            if example_cap and total_generated >= example_cap:
+                tqdm.write(f"\nExample cap reached: {total_generated:,} examples. Stopping.")
+                break
+            if byte_limit and bytes_written >= byte_limit:
+                tqdm.write(f"\nSize cap reached: {bytes_written / 1e6:.1f} MB written. Stopping.")
+                break
+
             use_journey = journey_flags[idx]
             prompts     = build_prompts(problem, use_journey)
 
             for trace_num, (system_prompt, user_msg) in enumerate(prompts, start=1):
+                if example_cap and total_generated >= example_cap:
+                    break
                 response = call_api(client, system_prompt, user_msg)
 
                 if is_valid_response(response):
-                    example = build_example(problem, response)
-                    out_f.write(json.dumps(example, ensure_ascii=False) + "\n")
+                    example  = build_example(problem, response)
+                    line     = json.dumps(example, ensure_ascii=False) + "\n"
+                    out_f.write(line)
                     total_generated += 1
+                    bytes_written   += len(line.encode("utf-8"))
                 else:
                     total_discarded += 1
 
@@ -402,7 +433,12 @@ def main():
             if len(completed_indices) % CHECKPOINT_EVERY == 0:
                 save_checkpoint(checkpoint_path, completed_indices)
                 out_f.flush()
-                tqdm.write(f"  Checkpoint saved | Generated: {total_generated:,} | Discarded: {total_discarded:,}")
+                tqdm.write(
+                    f"  Checkpoint saved | "
+                    f"Generated: {total_generated:,} | "
+                    f"Size: {bytes_written / 1e6:.1f} MB | "
+                    f"Discarded: {total_discarded:,}"
+                )
 
     # Final checkpoint
     save_checkpoint(checkpoint_path, completed_indices)
@@ -410,6 +446,8 @@ def main():
     print(f"\nDone.")
     print(f"  Problems processed : {len(completed_indices):,}")
     print(f"  Examples generated : {total_generated:,}")
+    print(f"  Output size        : {bytes_written / 1e6:.1f} MB")
+    print(f"  Avg example size   : {bytes_written // max(1, total_generated):,} bytes")
     print(f"  Responses discarded: {total_discarded:,}  ({total_discarded / max(1, total_generated + total_discarded) * 100:.1f}%)")
     print(f"  Output file        : {args.output}")
 

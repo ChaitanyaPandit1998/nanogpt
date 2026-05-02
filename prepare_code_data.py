@@ -50,67 +50,7 @@ from pathlib import Path
 
 from tqdm import tqdm
 
-# ---------------------------------------------------------------------------
-# Size budget — limits total output to a target token count
-
-
-def parse_size(s: str) -> int:
-    """Parse human-readable size into integer token count.
-
-    Examples:
-        '3B'   → 3,000,000,000   (3 billion tokens)
-        '500M' → 500,000,000     (500 million tokens)
-        '1.5B' → 1,500,000,000
-        '250M' → 250,000,000
-
-    Rough conversion: 1 GB of text ≈ 250M tokens (4 chars per token).
-    So '--target-tokens 3B' ≈ 12 GB of raw text.
-    """
-    s = s.strip().upper()
-    multipliers = {"K": 1_000, "M": 1_000_000, "B": 1_000_000_000, "T": 1_000_000_000_000}
-    for suffix, mult in multipliers.items():
-        if s.endswith(suffix):
-            return int(float(s[:-1]) * mult)
-    return int(s)
-
-
-class TokenBudget:
-    """Tracks characters written and stops collection when target is reached.
-
-    Uses the rough estimate: 1 token ≈ 4 characters.
-    Pass target_tokens=None for unlimited collection.
-    """
-
-    CHARS_PER_TOKEN = 4
-
-    def __init__(self, target_tokens: int | None):
-        self.target_tokens = target_tokens
-        self.chars_written = 0
-
-    def add(self, chars: int):
-        """Record chars written — call after every successful write."""
-        self.chars_written += chars
-
-    def exhausted(self) -> bool:
-        """Return True when the target has been reached."""
-        if self.target_tokens is None:
-            return False
-        return self.chars_written >= self.target_tokens * self.CHARS_PER_TOKEN
-
-    def tokens_written(self) -> int:
-        return self.chars_written // self.CHARS_PER_TOKEN
-
-    def remaining_tokens(self) -> int:
-        if self.target_tokens is None:
-            return float("inf")
-        return max(0, self.target_tokens - self.tokens_written())
-
-    def progress_str(self) -> str:
-        written = self.tokens_written()
-        if self.target_tokens is None:
-            return f"{written:,} tokens written (no limit)"
-        pct = written / self.target_tokens * 100
-        return f"{written:,} / {self.target_tokens:,} tokens ({pct:.1f}%)"
+from size_utils import parse_size, TokenBudget
 
 
 # ---------------------------------------------------------------------------

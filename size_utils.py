@@ -77,15 +77,24 @@ class TokenBudget:
         print(budget.progress_str())   # "12.5B / 25.0B tokens (50.0%)"
     """
 
+    # Default ratio — update after running tok_eval.py on your trained tokenizer.
+    # GPT-2/GPT-4 tokenizers: ~4.0
+    # Our 32K vocab tokenizer on FineWeb-Edu: ~4.4 (measured via tok_eval.py)
+    # Our 32K vocab tokenizer on Python code: ~3.5–3.8 (estimated, out-of-domain)
+    # Override per-run using the chars_per_token argument.
     CHARS_PER_TOKEN = 4
 
-    def __init__(self, target_tokens: int | None):
+    def __init__(self, target_tokens: int | None, chars_per_token: float = 4.0):
         """
         Args:
-            target_tokens: Token target, or None for unlimited collection.
+            target_tokens:    Token target, or None for unlimited collection.
+            chars_per_token:  Override the chars-per-token ratio for your specific
+                              tokenizer and data source. Measure with tok_eval.py.
+                              Default 4.0 is a safe conservative estimate.
         """
-        self.target_tokens = target_tokens
-        self.chars_written = 0
+        self.target_tokens   = target_tokens
+        self.chars_per_token = chars_per_token
+        self.chars_written   = 0
 
     def add(self, chars: int):
         """Record chars written. Call after every successful document write."""
@@ -95,11 +104,11 @@ class TokenBudget:
         """Return True when the token target has been reached."""
         if self.target_tokens is None:
             return False
-        return self.chars_written >= self.target_tokens * self.CHARS_PER_TOKEN
+        return self.chars_written >= self.target_tokens * self.chars_per_token
 
     def tokens_written(self) -> int:
         """Return approximate tokens written so far."""
-        return self.chars_written // self.CHARS_PER_TOKEN
+        return int(self.chars_written / self.chars_per_token)
 
     def remaining_tokens(self) -> int:
         """Return approximate remaining tokens before budget is exhausted."""
@@ -126,10 +135,14 @@ class TokenBudget:
         return self.chars_written / 1e9
 
     @classmethod
-    def from_str(cls, s: str | None) -> "TokenBudget":
+    def from_str(cls, s: str | None, chars_per_token: float = 4.0) -> "TokenBudget":
         """Convenience: create from a size string or None.
 
-        TokenBudget.from_str('25B')  → budget for 25B tokens
-        TokenBudget.from_str(None)   → unlimited budget
+        TokenBudget.from_str('25B')              → budget for 25B tokens (default ratio)
+        TokenBudget.from_str('3B', chars_per_token=3.6)  → budget using measured ratio
+        TokenBudget.from_str(None)               → unlimited budget
+
+        Tip: run tok_eval.py after training your tokenizer to get the actual
+        chars_per_token for each data source, then pass it here for accurate stopping.
         """
-        return cls(parse_size(s) if s else None)
+        return cls(parse_size(s) if s else None, chars_per_token=chars_per_token)

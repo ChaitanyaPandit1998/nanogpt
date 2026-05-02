@@ -1,44 +1,40 @@
 """
 tok_train.py
 ~~~~~~~~~~~~
-Train a BPE tokenizer in the style of GPT-4 on FineWeb-Edu text.
-Adapted from nanochat/scripts/tok_train.py.
+Train a BPE tokenizer on FineWeb-Edu + PleIAs/SEC + Python finance code.
 
-Trains a RustBPETokenizer (rustbpe for training, tiktoken for fast inference)
-on raw text streamed directly from HuggingFace — no pre-download required.
+All text is streamed on-the-fly — no pre-download required.
+Total network read: ~2 GB (2B characters over ~2-5 minutes).
 
-For tokenizer_v2 (multi-source):
-  Streams from FineWeb-Edu + PleIAs/SEC + Python code in proportion.
-  Total: 2B chars streamed and fed to rustbpe, never fully written to disk.
+Code source pipeline (no HuggingFace login needed):
+  1. GitHub repos        — high quality, cloned by prepare_code_data.py
+  2. Stack Exchange      — quant.SE + datascience.SE + SO (finance-tagged Python)
+  3. Kaggle notebooks    — optional, requires KAGGLE_USERNAME + KAGGLE_KEY
 
-For tokenizer_v1 (single source, original):
-  Streams from FineWeb-Edu only.
-
-After training, saves:
-  {output_dir}/tokenizer.pkl   — pickled tiktoken.Encoding (for fast inference)
-  {output_dir}/token_bytes.pt  — (vocab_size,) int32 tensor: byte length per token
-
-Requires:
-  pip install rustbpe tokenizers datasets tiktoken
+Note: The Stack (bigcode/the-stack-dedup) is intentionally NOT used here.
+It requires HuggingFace login + ToS, and the finance filter yields very low
+quality-per-char compared to the targeted sources above.
 
 Usage:
-  # Original single-source (FineWeb-Edu only) — tokenizer_v1
+  # tokenizer_v2 — multi-source, fully streamed
+  python tok_train.py --vocab-size 32768 --output-dir /workspace/tokenizer_v2/ --multi-source
+
+  # use pre-collected code from prepare_code_data.py (better coverage)
+  python tok_train.py --multi-source --code-jsonl /workspace/data/raw/code_train.jsonl \\
+    --output-dir /workspace/tokenizer_v2/
+
+  # original single-source (FineWeb-Edu only) — backward compatible
   python tok_train.py --vocab-size 32768 --max-chars 2000000000 --output-dir tokenizer/
 
-  # Multi-source — tokenizer_v2 (FineWeb-Edu + SEC + Python code)
-  python tok_train.py --vocab-size 32768 --output-dir tokenizer_v2/ --multi-source
-
-  # Quick test
+  # quick test
   python tok_train.py --vocab-size 1000 --max-chars 500000 --output-dir /tmp/test_tok
-
-No pre-download needed: all text is streamed on-the-fly from HuggingFace.
-Total data read: ~2 GB over the network (2B characters).
 """
 
 import os
+import re
+import json
 import time
 import argparse
-import json
 from pathlib import Path
 
 import torch
@@ -53,27 +49,27 @@ parser = argparse.ArgumentParser(description="Train a BPE tokenizer")
 parser.add_argument("--vocab-size",    type=int, default=32_768,
                     help="Vocabulary size (default: 32768 = 2^15)")
 parser.add_argument("--max-chars",     type=int, default=2_000_000_000,
-                    help="Total characters to train on (default: 2B). "
-                         "Ignored when --multi-source is set (each source has its own cap).")
+                    help="Total characters — single-source mode only (default: 2B)")
 parser.add_argument("--doc-cap",       type=int, default=10_000,
-                    help="Maximum characters per document (default: 10,000)")
+                    help="Max characters per document (default: 10K)")
 parser.add_argument("--output-dir",    type=str, default="tokenizer",
-                    help="Directory to save tokenizer files (default: tokenizer/)")
+                    help="Directory to save tokenizer files")
 parser.add_argument("--hf-dataset",    type=str, default="HuggingFaceFW/fineweb-edu",
-                    help="HuggingFace dataset to stream from — single-source mode only")
+                    help="HuggingFace dataset — single-source mode only")
+# Multi-source mode
 parser.add_argument("--multi-source",  action="store_true",
-                    help="Stream from FineWeb-Edu + PleIAs/SEC + Python code in proportion. "
-                         "Uses --fineweb-chars, --sec-chars, --code-chars for per-source caps.")
+                    help="Stream from FineWeb-Edu + PleIAs/SEC + Python code sources")
 parser.add_argument("--fineweb-chars", type=int, default=800_000_000,
-                    help="Chars from FineWeb-Edu in multi-source mode (default: 800M)")
+                    help="Chars from FineWeb-Edu (default: 800M)")
 parser.add_argument("--sec-chars",     type=int, default=800_000_000,
-                    help="Chars from PleIAs/SEC in multi-source mode (default: 800M)")
+                    help="Chars from PleIAs/SEC (default: 800M)")
 parser.add_argument("--code-chars",    type=int, default=400_000_000,
-                    help="Chars from Python code in multi-source mode (default: 400M)")
+                    help="Target chars from code sources — streams all available "
+                         "sources and stops early if target is reached (default: 400M). "
+                         "Realistic yield without The Stack: ~160-210M chars.")
 parser.add_argument("--code-jsonl",    type=str, default=None,
                     help="Path to code_train.jsonl from prepare_code_data.py. "
-                         "If set, reads code from this file instead of The Stack stream. "
-                         "If not set, streams Python code from bigcode/the-stack-dedup.")
+                         "If set, reads code from this file first.")
 args = parser.parse_args()
 
 total_chars = (args.fineweb_chars + args.sec_chars + args.code_chars
@@ -83,31 +79,38 @@ print(f"vocab_size   : {args.vocab_size:,}")
 print(f"output_dir   : {args.output_dir}")
 if args.multi_source:
     print(f"mode         : multi-source")
-    print(f"  fineweb    : {args.fineweb_chars / 1e6:.0f}M chars  (streaming HuggingFaceFW/fineweb-edu)")
-    print(f"  sec        : {args.sec_chars / 1e6:.0f}M chars  (streaming PleIAs/SEC)")
-    print(f"  code       : {args.code_chars / 1e6:.0f}M chars  "
-          f"({'file: ' + args.code_jsonl if args.code_jsonl else 'streaming bigcode/the-stack-dedup'})")
-    print(f"  total      : {total_chars / 1e9:.1f}B chars")
+    print(f"  fineweb    : {args.fineweb_chars / 1e6:.0f}M chars")
+    print(f"  sec        : {args.sec_chars / 1e6:.0f}M chars")
+    print(f"  code target: {args.code_chars / 1e6:.0f}M chars "
+          f"(realistic: ~160-210M without The Stack)")
+    if args.code_jsonl:
+        print(f"  code file  : {args.code_jsonl}")
 else:
     print(f"mode         : single-source ({args.hf_dataset})")
     print(f"max_chars    : {args.max_chars / 1e9:.1f}B chars")
 
 # -----------------------------------------------------------------------------
-# Streaming helpers
+# HuggingFace import
 
 try:
     from datasets import load_dataset as _hf_load
 except ImportError:
-    raise RuntimeError("HuggingFace `datasets` required. Install: pip install datasets")
+    raise RuntimeError("Install: pip install datasets")
 
+# -----------------------------------------------------------------------------
+# Generic streaming helpers
 
 def _stream_hf(dataset_id: str, char_limit: int, doc_cap: int,
                label: str, data_dir: str = None, filter_fn=None):
-    """Yield document texts streamed from a HuggingFace dataset up to char_limit."""
+    """Stream text documents from a HuggingFace dataset up to char_limit chars."""
     kwargs = dict(split="train", streaming=True, trust_remote_code=True)
     if data_dir:
         kwargs["data_dir"] = data_dir
-    dataset = _hf_load(dataset_id, **kwargs)
+    try:
+        dataset = _hf_load(dataset_id, **kwargs)
+    except Exception as e:
+        print(f"  Could not load {dataset_id}: {e}")
+        return
 
     nchars = 0
     pbar = tqdm(total=char_limit, unit="char", unit_scale=True, desc=label)
@@ -129,7 +132,7 @@ def _stream_hf(dataset_id: str, char_limit: int, doc_cap: int,
 
 
 def _stream_jsonl(path: str, char_limit: int, doc_cap: int, label: str):
-    """Yield document texts from a local JSONL file ({"text": "..."} entries)."""
+    """Stream text documents from a local JSONL file up to char_limit chars."""
     nchars = 0
     pbar = tqdm(total=char_limit, unit="char", unit_scale=True, desc=label)
     with open(path, encoding="utf-8") as f:
@@ -151,33 +154,236 @@ def _stream_jsonl(path: str, char_limit: int, doc_cap: int, label: str):
     pbar.close()
 
 
-# Finance keyword filter for The Stack (reuse same keywords as prepare_code_data.py)
-_FINANCE_IMPORTS = [
-    "yfinance", "pandas_datareader", "quantlib", "QuantLib",
-    "pyfolio", "zipline", "ffn", "quantstats", "alphalens",
-    "empyrical", "mplfinance", "pandas_ta", "talib", "backtrader",
+# -----------------------------------------------------------------------------
+# Stack Exchange code extraction
+
+# Python + finance keyword filter — applied to the question text
+_PYTHON_MARKERS = [
+    "python", "pandas", "numpy", "matplotlib", "scipy",
+    "sklearn", "jupyter", "dataframe",
+]
+_FINANCE_MARKERS = [
+    "stock", "portfolio", "returns", "sharpe", "volatility",
+    "trading", "backtest", "alpha", "beta", "options",
+    "dividend", "equity", "hedge", "risk", "quantitative",
+    "quant", "financial", "finance", "yfinance", "time series",
 ]
 
-def _is_finance_python(text: str) -> bool:
-    return any(f"import {lib}" in text or f"from {lib}" in text
-               for lib in _FINANCE_IMPORTS)
+def _is_finance_python_question(question: str) -> bool:
+    """Return True if the question is Python + finance/data-science related."""
+    q = question.lower()
+    has_python  = any(kw in q for kw in _PYTHON_MARKERS)
+    has_finance = any(kw in q for kw in _FINANCE_MARKERS)
+    return has_python and has_finance
+
+
+def _extract_code_blocks(text: str) -> str:
+    """Extract Python code blocks from a markdown/HTML Stack Exchange answer.
+
+    Handles:
+      1. Fenced blocks:   ```python ... ``` or ``` ... ```
+      2. Indented blocks: lines starting with 4 spaces or a tab
+      3. HTML blocks:     <pre><code>...</code></pre>
+    """
+    blocks = []
+
+    # 1. Fenced markdown blocks
+    fenced = re.findall(r'```(?:python|py)?\s*\n(.*?)```', text, re.DOTALL)
+    blocks.extend(b.strip() for b in fenced if b.strip())
+
+    # 2. Indented code blocks (groups of consecutive indented lines)
+    indented_buf = []
+    for line in text.splitlines():
+        if line.startswith('    ') or line.startswith('\t'):
+            indented_buf.append(line.lstrip())
+        else:
+            if indented_buf:
+                block = '\n'.join(indented_buf)
+                if len(block) >= 50:
+                    blocks.append(block)
+                indented_buf = []
+    if indented_buf:
+        block = '\n'.join(indented_buf)
+        if len(block) >= 50:
+            blocks.append(block)
+
+    # 3. HTML pre/code blocks
+    html_blocks = re.findall(r'<pre[^>]*><code[^>]*>(.*?)</code></pre>',
+                             text, re.DOTALL)
+    for b in html_blocks:
+        # Strip HTML entities
+        b = re.sub(r'&lt;', '<', b)
+        b = re.sub(r'&gt;', '>', b)
+        b = re.sub(r'&amp;', '&', b)
+        b = re.sub(r'&quot;', '"', b)
+        b = b.strip()
+        if len(b) >= 50:
+            blocks.append(b)
+
+    return '\n\n'.join(blocks)
+
+
+def _is_valid_code(code: str) -> bool:
+    """Return True if the extracted text looks like real Python code."""
+    if len(code) < 50:
+        return False
+    # Must contain at least 2 Python-looking patterns
+    signals = ['import ', 'def ', 'for ', 'if ', ' = ', '.', '()', '[]', ':']
+    return sum(s in code for s in signals) >= 2
+
+
+def _stream_stackexchange(char_limit: int, doc_cap: int) -> None:
+    """Stream Python finance code extracted from Stack Exchange Q&A answers.
+
+    Uses bigcode/stack-exchange-instruction — no login required, CC BY-SA 4.0.
+    Filters for Python + finance questions, extracts code blocks from answers.
+
+    Covers: quantitative.SE, datascience.SE, stats.SE, stackoverflow.com
+    """
+    try:
+        dataset = _hf_load(
+            "bigcode/stack-exchange-instruction",
+            split="train",
+            streaming=True,
+            trust_remote_code=True,
+        )
+    except Exception as e:
+        print(f"  Could not load stack-exchange-instruction: {e}")
+        return
+
+    nchars   = 0
+    kept     = 0
+    scanned  = 0
+    pbar     = tqdm(total=char_limit, unit="char", unit_scale=True,
+                    desc="Stack Exchange")
+
+    for row in dataset:
+        if nchars >= char_limit:
+            break
+
+        scanned += 1
+        question = row.get("question", "") or ""
+        response = row.get("response", "") or ""
+
+        # Layer 1: question must be Python + finance
+        if not _is_finance_python_question(question):
+            continue
+
+        # Layer 2: extract code blocks from the answer
+        code = _extract_code_blocks(response)
+        if not _is_valid_code(code):
+            continue
+
+        # Layer 3: cap and yield
+        if len(code) > doc_cap:
+            code = code[:doc_cap]
+
+        nchars += len(code)
+        kept   += 1
+        pbar.update(len(code))
+        yield code
+
+        if kept % 5000 == 0:
+            pbar.set_postfix({
+                "kept": kept,
+                "scanned": scanned,
+                "yield%": f"{kept / max(1, scanned) * 100:.1f}%",
+            })
+
+    pbar.close()
+    print(f"  Stack Exchange: {kept:,} code snippets from {scanned:,} questions "
+          f"({kept / max(1, scanned) * 100:.1f}% yield)")
+
+
+def _stream_kaggle(char_limit: int, doc_cap: int):
+    """Stream Python code from Kaggle finance notebooks.
+
+    Optional — requires KAGGLE_USERNAME + KAGGLE_KEY environment variables.
+    """
+    username = os.environ.get("KAGGLE_USERNAME")
+    key      = os.environ.get("KAGGLE_KEY")
+
+    if not username or not key:
+        print("  [Kaggle] Skipping — KAGGLE_USERNAME / KAGGLE_KEY not set.")
+        return
+
+    try:
+        import kaggle
+        kaggle.api.authenticate()
+    except Exception as e:
+        print(f"  [Kaggle] Auth failed: {e}")
+        return
+
+    KEYWORDS = ["finance", "stock", "portfolio", "trading", "quantitative"]
+    nchars  = 0
+    tmp_dir = "/tmp/kaggle_tok_notebooks"
+    os.makedirs(tmp_dir, exist_ok=True)
+
+    pbar = tqdm(total=char_limit, unit="char", unit_scale=True, desc="Kaggle")
+
+    for keyword in KEYWORDS:
+        if nchars >= char_limit:
+            break
+        try:
+            kernels = kaggle.api.kernels_list(
+                search=keyword, language="python", page_size=200
+            )
+        except Exception:
+            continue
+
+        for kernel in kernels:
+            if nchars >= char_limit:
+                break
+            ref  = kernel.ref
+            dest = os.path.join(tmp_dir, ref.replace("/", "__"))
+            os.makedirs(dest, exist_ok=True)
+            try:
+                kaggle.api.kernels_pull(ref, path=dest, metadata=False)
+            except Exception:
+                continue
+
+            for nb_path in Path(dest).rglob("*.ipynb"):
+                try:
+                    nb   = json.load(open(nb_path, encoding="utf-8"))
+                    code = "\n\n".join(
+                        "".join(cell.get("source", []))
+                        for cell in nb.get("cells", [])
+                        if cell.get("cell_type") == "code"
+                    ).strip()
+                except Exception:
+                    continue
+
+                if not _is_valid_code(code):
+                    continue
+                if len(code) > doc_cap:
+                    code = code[:doc_cap]
+
+                nchars += len(code)
+                pbar.update(len(code))
+                yield code
+
+                if nchars >= char_limit:
+                    break
+
+    pbar.close()
 
 
 # -----------------------------------------------------------------------------
 # Text iterator — single or multi-source
 
 def text_iterator():
-    """Yield all training text, streaming from the configured sources."""
+    """Yield all training text from configured sources."""
 
     if not args.multi_source:
-        # Original single-source mode (backward compatible)
         yield from _stream_hf(
             args.hf_dataset, args.max_chars, args.doc_cap,
             label="FineWeb-Edu",
         )
         return
 
-    # Multi-source mode
+    # --- Multi-source ---
+
+    # [1/3] FineWeb-Edu
     print("\n[1/3] Streaming FineWeb-Edu...")
     yield from _stream_hf(
         "HuggingFaceFW/fineweb-edu",
@@ -185,6 +391,7 @@ def text_iterator():
         label="FineWeb-Edu",
     )
 
+    # [2/3] PleIAs/SEC
     print("\n[2/3] Streaming PleIAs/SEC...")
     yield from _stream_hf(
         "PleIAs/SEC",
@@ -192,29 +399,54 @@ def text_iterator():
         label="PleIAs/SEC",
     )
 
+    # [3/3] Python finance code — no HuggingFace login needed for any source here
     print("\n[3/3] Streaming Python finance code...")
-    if args.code_jsonl and Path(args.code_jsonl).exists():
-        # Use pre-collected code_train.jsonl if available
-        print(f"  Reading from {args.code_jsonl}")
-        yield from _stream_jsonl(
-            args.code_jsonl, args.code_chars, args.doc_cap,
-            label="Code (JSONL)",
-        )
-    else:
-        # Fall back to streaming The Stack directly
-        if not args.code_jsonl:
-            print("  --code-jsonl not set. Streaming The Stack directly.")
-            print("  Tip: run prepare_code_data.py first for better code coverage.")
+    print(f"  Target : {args.code_chars / 1e6:.0f}M chars")
+    print(f"  Sources: code_train.jsonl → Stack Exchange → Kaggle (optional)")
+
+    code_chars_remaining = args.code_chars
+
+    # Sub-source A: pre-collected code_train.jsonl (best quality)
+    if args.code_jsonl:
+        if Path(args.code_jsonl).exists():
+            print(f"\n  [A] Reading {args.code_jsonl}...")
+            for text in _stream_jsonl(
+                args.code_jsonl, code_chars_remaining, args.doc_cap,
+                label="Code (JSONL)"
+            ):
+                code_chars_remaining -= len(text)
+                yield text
         else:
-            print(f"  {args.code_jsonl} not found. Falling back to The Stack stream.")
-        print("  Note: requires huggingface-cli login")
-        yield from _stream_hf(
-            "bigcode/the-stack-dedup",
-            args.code_chars, args.doc_cap,
-            label="Code (Stack)",
-            data_dir="data/python",
-            filter_fn=_is_finance_python,
-        )
+            print(f"  [A] {args.code_jsonl} not found — skipping.")
+
+    if code_chars_remaining <= 0:
+        print(f"  Code target reached from JSONL alone.")
+        return
+
+    # Sub-source B: Stack Exchange (quant.SE + datascience.SE + SO)
+    print(f"\n  [B] Streaming Stack Exchange "
+          f"(~{code_chars_remaining / 1e6:.0f}M chars remaining)...")
+    for text in _stream_stackexchange(code_chars_remaining, args.doc_cap):
+        code_chars_remaining -= len(text)
+        yield text
+
+    if code_chars_remaining <= 0:
+        print("  Code target reached from Stack Exchange.")
+        return
+
+    # Sub-source C: Kaggle (optional)
+    print(f"\n  [C] Kaggle notebooks "
+          f"(~{code_chars_remaining / 1e6:.0f}M chars remaining)...")
+    for text in _stream_kaggle(code_chars_remaining, args.doc_cap):
+        code_chars_remaining -= len(text)
+        yield text
+
+    chars_got = args.code_chars - code_chars_remaining
+    print(f"\n  Code collection complete: {chars_got / 1e6:.0f}M / "
+          f"{args.code_chars / 1e6:.0f}M chars target")
+    if chars_got < args.code_chars * 0.5:
+        print("  Note: got less than 50% of code target. "
+              "Run prepare_code_data.py and pass --code-jsonl for better coverage.")
 
 
 text_iter = text_iterator()
@@ -222,15 +454,15 @@ text_iter = text_iterator()
 # -----------------------------------------------------------------------------
 # Train the tokenizer
 
-print(f"\nTraining tokenizer (vocab_size={args.vocab_size:,}, ~{total_chars / 1e9:.1f}B chars)...")
+print(f"\nTraining tokenizer (vocab_size={args.vocab_size:,})...")
 t0 = time.time()
 tokenizer = RustBPETokenizer.train_from_iterator(text_iter, args.vocab_size)
 t1 = time.time()
 train_time = t1 - t0
-print(f"Training time: {train_time:.2f}s  ({train_time / 60:.1f} min)")
+print(f"Training time: {train_time:.1f}s  ({train_time / 60:.1f} min)")
 
 # -----------------------------------------------------------------------------
-# Save the tokenizer to disk
+# Save the tokenizer
 
 os.makedirs(args.output_dir, exist_ok=True)
 tokenizer.save(args.output_dir)
@@ -240,18 +472,21 @@ tokenizer.save(args.output_dir)
 
 test_text = """Hello world! This is a test.
 Numbers: 123, 4567, 89
-Finance: EBITDA, 10-K, GAAP, yfinance, portfolio_return
+Finance: EBITDA, 10-K, GAAP, yfinance, portfolio_return, sharpe_ratio
 Python: def sharpe_ratio(returns, rf=0.02): return returns.mean() / returns.std()
-Contractions: I'm, you're, it's
+Stack Overflow: df.pct_change().rolling(252).mean() / df.pct_change().rolling(252).std()
 Special chars: @#$%^&*()"""
+
 encoded = tokenizer.encode(test_text)
 decoded = tokenizer.decode(encoded)
-assert decoded == test_text, f"Roundtrip failed!\n  original: {test_text!r}\n  decoded:  {decoded!r}"
+assert decoded == test_text, (
+    f"Roundtrip failed!\n  original: {test_text!r}\n  decoded:  {decoded!r}"
+)
 chars_per_token = len(test_text) / len(encoded)
-print(f"Roundtrip sanity check passed.")
-print(f"  Test text: {len(encoded)} tokens for {len(test_text)} chars  "
-      f"= {chars_per_token:.2f} chars/token")
-print(f"  Tip: run tok_eval.py for a full chars/token measurement per domain.")
+print(f"\nRoundtrip check passed.")
+print(f"  {len(encoded)} tokens for {len(test_text)} chars "
+      f"= {chars_per_token:.2f} chars/token on test text")
+print(f"  Run tok_eval.py for domain-specific chars/token measurements.")
 
 # -----------------------------------------------------------------------------
 # Compute and save token_bytes
@@ -261,26 +496,21 @@ special_set = set(tokenizer.get_special_tokens())
 token_bytes = []
 for token_id in range(vocab_size):
     token_str = tokenizer.decode([token_id])
-    if token_str in special_set:
-        token_bytes.append(0)
-    else:
-        token_bytes.append(len(token_str.encode("utf-8")))
+    token_bytes.append(0 if token_str in special_set
+                       else len(token_str.encode("utf-8")))
 
-token_bytes_tensor = torch.tensor(token_bytes, dtype=torch.int32, device="cpu")
+token_bytes_tensor = torch.tensor(token_bytes, dtype=torch.int32)
 token_bytes_path   = os.path.join(args.output_dir, "token_bytes.pt")
-with open(token_bytes_path, "wb") as f:
-    torch.save(token_bytes_tensor, f)
+torch.save(token_bytes_tensor, open(token_bytes_path, "wb"))
 
 nonzero = token_bytes_tensor[token_bytes_tensor > 0].float()
-print(f"\nToken byte statistics (non-special tokens):")
-print(f"  count: {len(nonzero):,}")
-print(f"  min:   {int(nonzero.min().item())}")
-print(f"  max:   {int(nonzero.max().item())}")
-print(f"  mean:  {nonzero.mean().item():.2f}  ← chars/token proxy")
+print(f"\nToken byte stats (non-special):")
+print(f"  count  : {len(nonzero):,}")
+print(f"  mean   : {nonzero.mean().item():.2f}  ← approximate chars/token proxy")
+print(f"  min/max: {int(nonzero.min())} / {int(nonzero.max())}")
 
-print(f"\nDone. Tokenizer saved to {args.output_dir}/")
-print(f"  training time    : {train_time:.1f}s ({train_time / 60:.1f} min)")
-print(f"  vocab_size       : {vocab_size:,}")
-print(f"  special tokens   : {len(special_set)}")
-print(f"\nNext step: python tok_eval.py --tokenizer-dir {args.output_dir}/ --include-fwe")
-print(f"  This measures actual chars/token per domain — use that value in TokenBudget.")
+print(f"\nSaved to {args.output_dir}/")
+print(f"  Training time : {train_time:.0f}s ({train_time / 60:.1f} min)")
+print(f"  Vocab size    : {vocab_size:,}")
+print(f"  Special tokens: {len(special_set)}")
+print(f"\nNext: python tok_eval.py --tokenizer-dir {args.output_dir}/ --include-fwe")

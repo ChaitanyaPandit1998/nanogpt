@@ -675,11 +675,6 @@ if __name__ == '__main__':
     master_process = ddp_rank == 0   # this process will do logging, checkpointing etc.
     print0(f"COMPUTE_DTYPE: {COMPUTE_DTYPE} ({COMPUTE_DTYPE_REASON})")
 
-    # Custom BPE tokenizer (trained by tok_train.py).
-    # The tokenizer directory must exist before running pretraining.
-    TOKENIZER_DIR = "tokenizer"
-    tokenizer = get_tokenizer(TOKENIZER_DIR)
-
     # ---------------------------------------------------------------------------
     # Batch / data config
 
@@ -696,7 +691,12 @@ if __name__ == '__main__':
                               "/workspace/pretrain_data/code/:0.095'")
     _parser.add_argument("--log-dir", type=str, default="/workspace/log_v2/",
                          help="Directory for checkpoints and logs (default: /workspace/log_v2/)")
+    _parser.add_argument("--tokenizer-dir", type=str, default="/workspace/tokenizer_v2/",
+                         help="Directory containing tokenizer.pkl (default: /workspace/tokenizer_v2/)")
     _args, _ = _parser.parse_known_args()
+
+    # Custom BPE tokenizer — load AFTER argparse so --tokenizer-dir is respected.
+    tokenizer = get_tokenizer(_args.tokenizer_dir)
 
     # Parse data sources
     if _args.data_sources:

@@ -235,4 +235,9 @@ class DataLoaderLite:
         for loader, s in zip(self._loaders, state["sources"]):
             loader.load_state_dict(s)
         if "rng" in state:
-            self._rng.setstate(state["rng"])
+            rng_state = state["rng"]
+            if isinstance(rng_state, list):
+                # JSON converts tuples to lists — reconstruct nested tuple
+                # random.getstate() format: (version, internalstate_tuple, gauss_next)
+                rng_state = (rng_state[0], tuple(rng_state[1]), rng_state[2])
+            self._rng.setstate(rng_state)

@@ -7,7 +7,7 @@ Produces code_train.jsonl — {"text": "..."} entries ready for fineweb.py token
 
 Three sources:
   1. GitHub repos  — clone with --depth=1, extract .py and .ipynb files
-  2. The Stack     — stream bigcode/the-stack-dedup, filter for finance Python
+  2. Stack Exchange — stream ArmelR/stack-exchange-instruction, extract finance Python code
   3. Kaggle        — optional; requires KAGGLE_USERNAME + KAGGLE_KEY env vars
 
 Pipeline:
@@ -37,7 +37,7 @@ Clones: /workspace/finance_repos/ (default)
 Requirements:
   pip install datasets tqdm kaggle   # kaggle only needed for --source kaggle
   git must be installed (for cloning repos)
-  huggingface-cli login              (for The Stack)
+  # No HuggingFace login required — Stack Exchange source is public
 """
 
 import argparse
@@ -307,7 +307,20 @@ def collect_from_github(
 
 
 # ---------------------------------------------------------------------------
-# Source 2: The Stack
+# Source 2: Stack Exchange (ArmelR/stack-exchange-instruction)
+# bigcode/the-stack-dedup is gated and requires HuggingFace login.
+# ArmelR/stack-exchange-instruction is public, no auth, same finance Python content.
+
+import re as _re
+
+def _extract_code_blocks(text: str) -> str:
+    """Extract Python code blocks from markdown text."""
+    blocks = _re.findall(r"```(?:python)?\s*\n(.*?)```", text, _re.DOTALL)
+    if blocks:
+        return "\n\n".join(b.strip() for b in blocks)
+    if "def " in text or "import " in text:
+        return text.strip()
+    return ""
 
 
 def collect_from_stack(
@@ -319,37 +332,37 @@ def collect_from_stack(
     budget: "TokenBudget",
     start_from: int = 0,
 ) -> dict:
-    """Stream The Stack Python subset, filter for finance, write to JSONL."""
+    """Stream Stack Exchange Q&A, extract finance Python code, write to JSONL.
+
+    Uses ArmelR/stack-exchange-instruction (public, no auth, 1.61M rows)
+    instead of the gated bigcode/the-stack-dedup.
+    """
     try:
         from datasets import load_dataset
     except ImportError:
         print("ERROR: 'datasets' not installed. Run: pip install datasets")
         return {"files": 0, "chars": 0}
 
-    print("\n[The Stack] Streaming bigcode/the-stack-dedup (Python)...")
-    print("  Note: requires HuggingFace login — run: huggingface-cli login")
+    print("\n[Stack Exchange] Streaming ArmelR/stack-exchange-instruction...")
+    print("  No login required — public dataset, CC BY-SA 4.0")
 
     try:
         ds = load_dataset(
-            "bigcode/the-stack-dedup",
-            data_dir="data/python",
-            split="train",
+            "ArmelR/stack-exchange-instruction",
+            split="test",
             streaming=True,
-            trust_remote_code=True,
         )
     except Exception as e:
-        print(f"  ERROR loading The Stack: {e}")
-        print("  Make sure you are logged in: huggingface-cli login")
+        print(f"  ERROR loading stack-exchange-instruction: {e}")
         return {"files": 0, "chars": 0}
 
     stats = {"files": 0, "chars": 0, "skipped_quality": 0, "skipped_finance": 0, "skipped_dupes": 0}
     processed = 0
 
     with open(output_path, "a", encoding="utf-8") as out_f:
-        pbar = tqdm(desc="The Stack", unit=" files", total=limit)
+        pbar = tqdm(desc="Stack Exchange", unit=" snippets", total=limit)
 
         for row in ds:
-            # Stop if file-count limit OR token budget exhausted
             if budget.exhausted():
                 pbar.set_postfix({"status": "budget reached"})
                 break
@@ -359,15 +372,22 @@ def collect_from_stack(
             if stats["files"] + stats["skipped_quality"] + stats["skipped_finance"] >= limit:
                 break
 
-            content = row.get("content", "")
             processed += 1
             pbar.update(1)
+
+            question = row.get("question", "") or ""
+            response = row.get("response", "") or ""
+            content  = _extract_code_blocks(response)
+
+            if not content:
+                stats["skipped_quality"] += 1
+                continue
 
             if not is_quality_file(content, min_lines, max_lines):
                 stats["skipped_quality"] += 1
                 continue
 
-            if not is_finance_file(content):
+            if not is_finance_file(question + " " + content):
                 stats["skipped_finance"] += 1
                 continue
 
@@ -377,9 +397,8 @@ def collect_from_stack(
                 continue
             seen_hashes.add(h)
 
-            path = row.get("path", "unknown.py")
-            text = make_text(content, "the_stack", "bigcode/the-stack-dedup", path, "various (permissive)")
-            write_entry(out_f, text, "the_stack", "bigcode/the-stack-dedup", path)
+            text = make_text(content, "stackexchange", "ArmelR/stack-exchange-instruction", "answer.py", "CC BY-SA 4.0")
+            write_entry(out_f, text, "stackexchange", "ArmelR/stack-exchange-instruction", "answer.py")
             stats["files"] += 1
             stats["chars"] += len(text)
             budget.add(len(text))
@@ -591,7 +610,7 @@ def main():
     # Source 2: The Stack
     if "stack" in sources and not ckpt.get("stack_done") and not budget.exhausted():
         print("\n" + "=" * 50)
-        print("SOURCE 2: The Stack (streaming)")
+        print("SOURCE 2: Stack Exchange (streaming)")
         print("=" * 50)
         stack_start = ckpt.get("stack_files_processed", 0)
         stack_stats = collect_from_stack(
@@ -601,10 +620,10 @@ def main():
         ckpt["stack_done"] = True
         ckpt["stack_stats"] = stack_stats
         save_checkpoint(checkpoint_path, ckpt)
-        print(f"\nThe Stack: {stack_stats['files']:,} files, {stack_stats['chars']:,} chars")
+        print(f"\nStack Exchange: {stack_stats['files']:,} snippets, {stack_stats['chars']:,} chars")
     elif ckpt.get("stack_done"):
         stack_stats = ckpt.get("stack_stats", stack_stats)
-        print(f"\n[The Stack] Already done (checkpoint). {stack_stats['files']:,} files.")
+        print(f"\n[Stack Exchange] Already done (checkpoint). {stack_stats['files']:,} snippets.")
 
     # Source 3: Kaggle
     if "kaggle" in sources and not ckpt.get("kaggle_done") and not budget.exhausted():

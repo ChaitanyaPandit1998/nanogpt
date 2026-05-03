@@ -284,7 +284,7 @@ def _stream_stackexchange(char_limit: int, doc_cap: int) -> None:
     try:
         dataset = _hf_load(
             "ArmelR/stack-exchange-instruction",
-            split="train",
+            split="test",
             streaming=True,
         )
     except Exception as e:

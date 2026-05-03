@@ -58,12 +58,12 @@ def load_finqa(split: str = "train") -> list[dict]:
     (which only takes a single string) works without modification.
     """
     try:
-        ds = load_dataset("ibm/finqa", split=split, trust_remote_code=True)
+        ds = load_dataset("ibm-research/finqa", split=split, trust_remote_code=True)
     except Exception as e:
         raise RuntimeError(
             f"Could not load FinQA ({split}): {e}\n"
             "Install with: pip install datasets\n"
-            "Dataset: ibm/finqa on HuggingFace"
+            "Dataset: ibm-research/finqa on HuggingFace"
         )
 
     examples = []

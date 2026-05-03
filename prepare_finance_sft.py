@@ -32,8 +32,8 @@ from tqdm import tqdm
 parser = argparse.ArgumentParser(description="Convert Finance-Alpaca + FinCoT to JSONL")
 parser.add_argument("--output",          type=str, default="/workspace/data/sft/",
                     help="Output directory (default: /workspace/data/sft/)")
-parser.add_argument("--sources",         type=str, default="alpaca,fincot",
-                    help="Comma-separated sources to convert: alpaca, fincot (default: both)")
+parser.add_argument("--sources",         type=str, default="alpaca",
+                    help="Comma-separated sources to convert: alpaca (fincot removed — dataset gone)")
 parser.add_argument("--max-examples",    type=int, default=None,
                     help="Cap examples per source for testing (default: all)")
 args = parser.parse_args()

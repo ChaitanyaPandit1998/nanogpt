@@ -73,11 +73,13 @@ INTER_CALL_DELAY         = 0.5     # Seconds between API calls (rate limiting)
 MAX_CONTEXT_CHARS        = 2000    # Truncate context beyond this length
 MIN_RESPONSE_TOKENS      = 60      # Discard responses shorter than this
 
-# HuggingFace dataset IDs — verify these on huggingface.co/datasets
+# HuggingFace dataset IDs (verified public as of 2025-05):
+#   ibm/finqa        → redirects to ibm-research/finqa (public, CC-BY-4.0)
+#   deepmind/tatqa   → gated/private — removed
+#   ibm/convfinqa    → gated/private — replaced with TheFinAI/flare-convfinqa
 DATASET_IDS = {
-    "finqa":     "ibm/finqa",
-    "tatqa":     "deepmind/tatqa",
-    "convfinqa": "ibm/convfinqa",
+    "finqa":     "ibm-research/finqa",
+    "convfinqa": "TheFinAI/flare-convfinqa",
 }
 
 # ---------------------------------------------------------------------------
@@ -102,55 +104,22 @@ def load_finqa(split="train"):
     return problems
 
 
-def load_tatqa(split="train"):
-    """Load TAT-QA and return list of (context_str, question, answer) tuples."""
-    print(f"Loading TAT-QA ({split})...")
-    ds = load_dataset(DATASET_IDS["tatqa"], split=split, trust_remote_code=True)
-    problems = []
-    for row in ds:
-        # TAT-QA has a list of questions per context — extract each
-        table_str  = _format_table(row.get("table", {}).get("table", []))
-        paragraphs = row.get("paragraphs", [])
-        para_text  = " ".join(p.get("text", "") for p in paragraphs)
-        context    = _combine_context(para_text, table_str, "")
-
-        for qa in row.get("questions", []):
-            question = qa.get("question", "")
-            answers  = qa.get("answer", [])
-            answer   = answers[0] if answers else ""
-            if question and context:
-                problems.append({"context": context, "question": question, "answer": str(answer), "source": "tatqa"})
-    print(f"  Loaded {len(problems):,} TAT-QA problems")
-    return problems
-
 
 def load_convfinqa(split="train"):
-    """Load ConvFinQA and return list of (context_str, question, answer) tuples.
-    For multi-turn conversations, the context includes all prior Q&A pairs."""
+    """Load TheFinAI/flare-convfinqa and return list of dicts.
+
+    Fields: query (question), answer (numeric string).
+    No table/context fields in this dataset — question is self-contained.
+    """
     print(f"Loading ConvFinQA ({split})...")
-    ds = load_dataset(DATASET_IDS["convfinqa"], split=split, trust_remote_code=True)
+    hf_split = "valid" if split == "validation" else split
+    ds = load_dataset(DATASET_IDS["convfinqa"], split=hf_split)
     problems = []
     for row in ds:
-        table_str  = _format_table(row.get("table", []))
-        pre_text   = " ".join(row.get("pre_text", [])) if isinstance(row.get("pre_text"), list) else row.get("pre_text", "")
-        post_text  = " ".join(row.get("post_text", [])) if isinstance(row.get("post_text"), list) else row.get("post_text", "")
-        base_ctx   = _combine_context(pre_text, table_str, post_text)
-
-        # Build up the conversation context turn by turn
-        prior_qa = []
-        for turn in row.get("annotation", {}).get("dialogue_break", []):
-            question = turn.get("question", "")
-            answer   = turn.get("turn_program", "") or turn.get("exe_ans", "")
-            if question:
-                # Include all prior Q&A pairs as context for this question
-                prior_str = ""
-                if prior_qa:
-                    prior_str = "\n\nPrevious Q&A:\n" + "\n".join(
-                        f"Q: {q}\nA: {a}" for q, a in prior_qa
-                    )
-                context = base_ctx + prior_str
-                problems.append({"context": context, "question": question, "answer": str(answer), "source": "convfinqa"})
-                prior_qa.append((question, str(answer)))
+        question = row.get("query", "") or ""
+        answer   = str(row.get("answer", ""))
+        if question:
+            problems.append({"context": "", "question": question, "answer": answer, "source": "convfinqa"})
     print(f"  Loaded {len(problems):,} ConvFinQA problems")
     return problems
 
@@ -325,7 +294,7 @@ def save_checkpoint(checkpoint_path, completed_indices):
 def main():
     parser = argparse.ArgumentParser(description="Generate finance CoT SFT data via GPT-4o mini")
     parser.add_argument("--output",        type=str, default="/workspace/data/sft/chat_finance_cot.jsonl", help="Output JSONL file")
-    parser.add_argument("--datasets",      type=str, default="finqa,tatqa,convfinqa",  help="Comma-separated list of datasets to use")
+    parser.add_argument("--datasets",      type=str, default="finqa,convfinqa",        help="Comma-separated list of datasets to use (tatqa removed — gated)")
     parser.add_argument("--max-problems",  type=int, default=None,                     help="Cap source problems (default: all). Each problem → 3 examples.")
     parser.add_argument("--max-examples",  type=int, default=None,                     help="Stop after writing this many total examples (default: no limit)")
     parser.add_argument("--max-mb",        type=float, default=None,                   help="Stop after approximately this many MB of output (default: no limit)")
@@ -355,7 +324,7 @@ def main():
     # Load datasets
     requested = [d.strip().lower() for d in args.datasets.split(",")]
     all_problems = []
-    loaders = {"finqa": load_finqa, "tatqa": load_tatqa, "convfinqa": load_convfinqa}
+    loaders = {"finqa": load_finqa, "convfinqa": load_convfinqa}
     for name in requested:
         if name not in loaders:
             print(f"Unknown dataset: {name}. Options: {list(loaders.keys())}")

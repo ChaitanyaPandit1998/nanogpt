@@ -184,25 +184,22 @@ def _iter_code(jsonl_path: str, docs_to_skip: int):
 
 
 def _iter_codeparrot(docs_to_skip: int):
-    """Stream codeparrot/github-code filtered for Python.
+    """Stream codeparrot/codeparrot-clean — cleaned GitHub Python code.
 
-    Public dataset, no auth required. Contains ~115B tokens across all
-    languages; Python subset alone is ~15-20B tokens.
-    Fields used: 'code' (the file content), 'language' (filter == Python).
+    Public, no auth, standard Parquet format (no legacy dataset script).
+    codeparrot/github-code uses a legacy script no longer supported by HF.
+    This dataset is the cleaned Python-only version, field: 'content'.
+    Contains ~180GB of deduplicated Python code from GitHub.
     """
     ds = load_dataset(
-        "codeparrot/github-code",
+        "codeparrot/codeparrot-clean",
         split="train",
         streaming=True,
-        trust_remote_code=True,
-        filter_languages=["Python"],   # server-side filter — reduces bandwidth
     )
     if docs_to_skip:
         ds = ds.skip(docs_to_skip)
     for doc in ds:
-        if doc.get("language") != "Python":
-            continue
-        code = doc.get("code", "") or ""
+        code = doc.get("content", "") or ""
         if code.strip():
             yield {"text": code}
 

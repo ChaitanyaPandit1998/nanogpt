@@ -447,6 +447,37 @@ python eval_finance.py \
 
 ---
 
+## Training steps reference
+
+### How steps are calculated
+
+| Stage | Formula | Result |
+|---|---|---|
+| **Pretraining** | 37B tokens ÷ 524,288 tokens/step | **70,572 steps** |
+| **SFT** | ~376M SFT tokens ÷ (B=8 × T=2048 × 1 GPU) | **~23,000 steps** |
+| **RL** | FinQA train examples ÷ `--examples-per-step` | **~312 steps** (default `--examples-per-step 20`) |
+
+> The SFT step count is auto-computed at runtime — the number printed at startup is authoritative.
+> RL steps depend on the `--examples-per-step` flag; see Phase 8.
+
+### Why these differ from the previous version
+
+| Stage | Previous | nanogpt 2.0 | Reason |
+|---|---|---|---|
+| Pretraining | ~19,000 steps | **~70,572 steps** | Dataset grew from ~10B → 37B tokens |
+| SFT | ~46,000 steps | **~23,000 steps** | Context doubled (T=1024 → T=2048); each step consumes 2× more tokens |
+| RL | ~312 steps | **~312 steps** | Unchanged — same FinQA dataset and `--examples-per-step 20` |
+
+### Checkpoint cadence
+
+| Stage | Checkpoint every | Max checkpoints saved |
+|---|---|---|
+| Pretraining | 5,000 steps | ~14 mid-run + 1 final |
+| SFT | 5,000 steps | ~4 mid-run + 1 final |
+| RL | 60 steps (default) | ~5 mid-run + 1 final |
+
+---
+
 ## Full cost summary
 
 | Phase | Step | Duration | Cost |

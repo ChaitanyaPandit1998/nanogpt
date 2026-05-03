@@ -473,9 +473,21 @@ def collect_from_kaggle(output_path: str, seen_hashes: set, budget: "TokenBudget
         print("  Get credentials from kaggle.com > Account > Create API Token")
         return {"files": 0, "chars": 0}
 
+    # Write ~/.kaggle/kaggle.json from env vars — more reliable than env-var
+    # auth alone, since the kaggle library checks the file first.
+    kaggle_dir = Path.home() / ".kaggle"
+    kaggle_dir.mkdir(exist_ok=True)
+    kaggle_cfg = kaggle_dir / "kaggle.json"
+    if not kaggle_cfg.exists():
+        import json as _json
+        kaggle_cfg.write_text(_json.dumps({"username": username, "key": key}))
+        kaggle_cfg.chmod(0o600)
+        print("  Wrote ~/.kaggle/kaggle.json from env vars")
+
     try:
         import kaggle
         kaggle.api.authenticate()
+        print("  Kaggle auth OK")
     except Exception as e:
         print(f"\n[Kaggle] Auth failed: {e}")
         return {"files": 0, "chars": 0}
@@ -493,8 +505,14 @@ def collect_from_kaggle(output_path: str, seen_hashes: set, budget: "TokenBudget
         try:
             kernels = kaggle.api.kernels_list(
                 search=keyword, language="python",
-                sort_by="voteCount",    # top-voted first — higher quality
+                sort_by="hotness",      # "hotness" is universally valid across API versions
                 page_size=100,
+            )
+            print(f"  '{keyword}': {len(list(kernels))} kernels found")
+            # Re-fetch since list() exhausts the iterator
+            kernels = kaggle.api.kernels_list(
+                search=keyword, language="python",
+                sort_by="hotness", page_size=100,
             )
         except Exception as e:
             print(f"  Search '{keyword}' failed: {e}")

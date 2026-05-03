@@ -742,12 +742,12 @@ if __name__ == '__main__':
 
     model = GPT(GPTConfig(vocab_size=tokenizer.get_vocab_size()))
     model.to(device)
-    use_compile = False
+    use_compile = True
     if use_compile:
         model = torch.compile(model, dynamic=False)
     if ddp:
         model = DDP(model, device_ids=[ddp_local_rank])
-    raw_model = model.module if ddp else model
+    raw_model = model.module if ddp else model  # uncompiled — used for checkpoints and generation
 
     # ---------------------------------------------------------------------------
     # Optimizer
@@ -936,8 +936,8 @@ if __name__ == '__main__':
         # Text generation sample — 3 rotating batches of finance prompts.
         # Cycles batch A → B → C → A every 250 steps to give broad coverage
         # of financial concepts, Python code, and SEC/macro language.
-        if ((step > 0 and step % 250 == 0) or last_step) and not use_compile:
-            model.eval()
+        if (step > 0 and step % 250 == 0) or last_step:
+            raw_model.eval()  # use uncompiled model — works with dynamic generation shapes
             max_length = 150
             _pretrain_batches = [
                 # Batch A — financial concepts & ratios
@@ -973,7 +973,7 @@ if __name__ == '__main__':
                 prompt_len = xgen.size(1)
                 while xgen.size(1) < prompt_len + max_length:
                     with torch.no_grad():
-                        logits, _ = model(xgen)
+                        logits, _ = raw_model(xgen)
                     logits = logits[:, -1, :]
                     probs  = F.softmax(logits, dim=-1)
                     topk_probs, topk_indices = torch.topk(probs, 50, dim=-1)
@@ -986,6 +986,7 @@ if __name__ == '__main__':
 
         # Training step
         model.train()
+        raw_model.train()
 
         # Apply all schedulers before the forward/backward pass.
         # All groups get the same LR multiplier applied to their individual initial_lr.

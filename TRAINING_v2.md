@@ -228,18 +228,18 @@ the model has no understanding of any domain. This is the most expensive step.
 ```bash
 cd /workspace/nanogpt
 
-# Multi-source weighted pretraining (4× H100 recommended)
-torchrun --nproc_per_node=4 train_gpt.py \
-  --tokenizer-dir /workspace/tokenizer_v2/ \
+torchrun --standalone --nproc_per_node=8 train_gpt.py \
   --data-sources "/workspace/pretrain_data/fineweb/:0.619,/workspace/pretrain_data/sec/:0.286,/workspace/pretrain_data/code/:0.095" \
+  --tokenizer-dir /workspace/tokenizer_v2/ \
   --log-dir /workspace/log_v2/
 
 # Config (already set in GPTConfig):
 #   n_layer=20, n_embd=768, block_size=2048 → ~250M params
-#   B=16, T=2048, max_steps=70572 (37B tokens / 524288 per step)
+#   B=16, T=2048, max_steps=60119 (31.5B tokens / 524288 per step)
+#   Data mix: FineWeb 61.9% | SEC 28.6% | Code 9.5%
 
-# Duration: ~16 hours on 4× H100 SXM
-# Cost:     ~$264 on RunPod
+# Duration: ~8.5 hours on 8× H100 SXM
+# Cost:     ~$280 on RunPod
 # Resume:   re-run the same command — auto-detects checkpoint in log_v2/
 # Monitor:  tail -f /workspace/log_v2/log.txt
 ```

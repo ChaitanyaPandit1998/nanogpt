@@ -313,10 +313,11 @@ def collect_from_github(
 
 import re as _re
 
-# Broad finance keywords for Stack Exchange question-level filtering.
-# Intentionally wider than FINANCE_KEYWORDS (which targets code identifiers).
-# The finance signal is in the *question*, not the code variable names.
+# Broad keyword filter for Stack Exchange question-level filtering.
+# Covers finance, data science, statistics, ML, and general Python —
+# all relevant for a finance model that needs to write Python code.
 _SE_FINANCE_KEYWORDS = [
+    # --- Finance & markets ---
     "portfolio", "stock", "equity", "bond", "option", "derivative",
     "sharpe", "sortino", "drawdown", "volatility", "returns", "yield",
     "dividend", "valuation", "hedge", "risk", "alpha", "beta",
@@ -324,6 +325,23 @@ _SE_FINANCE_KEYWORDS = [
     "yfinance", "pandas_datareader", "quantlib", "backtrader",
     "market", "trading", "investment", "asset", "price", "financial",
     "cash flow", "earnings", "balance sheet", "income statement",
+    "interest rate", "currency", "forex", "crypto", "futures",
+    # --- Data science & ML ---
+    "pandas", "numpy", "matplotlib", "seaborn", "plotly",
+    "scipy", "sklearn", "scikit-learn", "tensorflow", "keras", "pytorch",
+    "dataframe", "time series", "regression", "classification", "clustering",
+    "machine learning", "deep learning", "neural network", "gradient",
+    "cross-validation", "overfitting", "feature engineering", "embedding",
+    # --- Statistics & math ---
+    "statistics", "probability", "distribution", "hypothesis test",
+    "correlation", "covariance", "variance", "standard deviation",
+    "bayesian", "monte carlo", "simulation", "optimization",
+    "linear programming", "convex", "stochastic",
+    # --- Data engineering & Python utilities ---
+    "sql", "database", "query", "csv", "json", "parquet", "api",
+    "web scraping", "requests", "beautifulsoup", "selenium",
+    "multithreading", "multiprocessing", "async", "performance",
+    "data cleaning", "missing values", "normalization", "aggregation",
 ]
 
 def _is_finance_question(text: str) -> bool:

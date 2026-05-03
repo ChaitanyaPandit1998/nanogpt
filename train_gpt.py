@@ -932,30 +932,36 @@ if __name__ == '__main__':
                         rank=ddp_rank,
                     )
 
-        # Text generation sample
+        # Text generation sample — finance-specific prompts to sanity-check
+        # whether the model is absorbing domain knowledge during pretraining.
         if ((step > 0 and step % 250 == 0) or last_step) and not use_compile:
             model.eval()
-            num_return_sequences = 4
-            max_length = 32
-            tokens = tokenizer.encode("Hello, I'm a language model,")
-            tokens = torch.tensor(tokens, dtype=torch.long)
-            tokens = tokens.unsqueeze(0).repeat(num_return_sequences, 1)
-            xgen = tokens.to(device)
+            max_length = 150
+            sample_prompts = [
+                "The Sharpe ratio measures",
+                "def calculate_sharpe_ratio(returns, risk_free_rate):",
+                "In its annual 10-K filing, the company reported",
+                "The Federal Reserve raised interest rates in order to",
+            ]
             sample_rng = torch.Generator(device=device)
             sample_rng.manual_seed(42 + ddp_rank)
-            while xgen.size(1) < max_length:
-                with torch.no_grad():
-                    logits, loss = model(xgen)
-                logits = logits[:, -1, :]
-                probs  = F.softmax(logits, dim=-1)
-                topk_probs, topk_indices = torch.topk(probs, 50, dim=-1)
-                ix   = torch.multinomial(topk_probs, 1, generator=sample_rng)
-                xcol = torch.gather(topk_indices, -1, ix)
-                xgen = torch.cat((xgen, xcol), dim=1)
-            for i in range(num_return_sequences):
-                tokens  = xgen[i, :max_length].tolist()
-                decoded = tokenizer.decode(tokens)
-                print0(f"rank {ddp_rank} sample {i}: {decoded}")
+            print0(f"\n{'='*60}\nGeneration samples (step {step}):")
+            for prompt in sample_prompts:
+                prompt_tokens = tokenizer.encode(prompt)
+                xgen = torch.tensor(prompt_tokens, dtype=torch.long, device=device).unsqueeze(0)
+                prompt_len = xgen.size(1)
+                while xgen.size(1) < prompt_len + max_length:
+                    with torch.no_grad():
+                        logits, _ = model(xgen)
+                    logits = logits[:, -1, :]
+                    probs  = F.softmax(logits, dim=-1)
+                    topk_probs, topk_indices = torch.topk(probs, 50, dim=-1)
+                    ix   = torch.multinomial(topk_probs, 1, generator=sample_rng)
+                    xcol = torch.gather(topk_indices, -1, ix)
+                    xgen = torch.cat((xgen, xcol), dim=1)
+                decoded = tokenizer.decode(xgen[0].tolist())
+                print0(f"  >> {decoded}\n")
+            print0('='*60)
 
         # Training step
         model.train()

@@ -297,9 +297,11 @@ def get_muon_momentum(step: int) -> float:
 # These run every --sample-every steps so you can eyeball whether the model
 # is learning the chat format and producing coherent responses.
 SAMPLE_PROMPTS = [
-    "What is machine learning?",
-    "Explain gravity to a 10-year-old.",
-    "What is the capital of France?",
+    "What is the Sharpe ratio and how is it calculated?",
+    "Write a Python function to calculate the maximum drawdown of a return series.",
+    "What does a high debt-to-equity ratio tell us about a company?",
+    "Explain discounted cash flow valuation in simple terms.",
+    "What is the difference between Value at Risk and Conditional Value at Risk?",
 ]
 
 @torch.no_grad()

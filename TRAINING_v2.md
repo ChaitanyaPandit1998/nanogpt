@@ -13,7 +13,7 @@
 - Python 3.10+, Git, CUDA 12.8
 - OpenAI API key (for SFT data generation, ~$35)
 - Kaggle API key (optional, improves code data quality)
-- HuggingFace account (for The Stack access, optional)
+- HuggingFace account (optional — for higher API rate limits)
 
 ---
 
@@ -133,21 +133,21 @@ python tok_eval.py --tokenizer-dir /workspace/tokenizer_v2/ --include-fwe
 
 ## Phase 2 — Pretraining Data Collection
 
-### Step 2.1 — Collect finance Python code
+### Step 2.1 — Collect finance Python code (optional)
 
-**Why:** The model needs Python finance code in pretraining to generate pandas/yfinance
-scripts at inference time. This step collects ~160–200M chars from GitHub repos,
-Stack Exchange, and optionally Kaggle — no pre-download needed for GitHub.
+**Why:** `prepare_code_data.py` collects finance-specific Python snippets from GitHub
+and Stack Exchange for the SFT tokenizer step. For pretraining, the code shard now
+streams directly from `codeparrot/codeparrot-clean` (Phase 3.3) — so this step is
+**only needed if you want to retrain the tokenizer with code data**.
+
+> **Note:** `bigcode/the-stack-dedup` was removed — replaced with
+> `ArmelR/stack-exchange-instruction` (public, no auth). Kaggle requires phone
+> verification at kaggle.com → Account → Settings before the API works.
 
 ```bash
 cd /workspace/nanogpt
 
-# GitHub only (fast, ~5 min, no credentials needed)
-python prepare_code_data.py \
-  --source github \
-  --output-file /workspace/data/raw/code_train.jsonl
-
-# Full run including Stack Exchange (~1–2 hours)
+# Full run — GitHub + Stack Exchange (~1–2 hours)
 python prepare_code_data.py \
   --target-tokens 3B \
   --output-file /workspace/data/raw/code_train.jsonl
@@ -175,6 +175,7 @@ python fineweb.py \
 # Duration: ~3 hours on 1× H100
 # Output:   ~250 shards of 100M tokens each
 # Resume:   re-run the same command — auto-detects checkpoint
+#           If checkpoint is missing: python fix_checkpoint.py --source fineweb
 ```
 
 ### Step 3.2 — Tokenize PleIAs/SEC (9B tokens)
@@ -191,25 +192,27 @@ python fineweb.py \
 
 # Duration: ~1.5 hours on 1× H100
 # Output:   ~90 shards
-# Resume:   re-run the same command
+# Resume:   re-run the same command — auto-detects checkpoint
+#           If checkpoint is missing: python fix_checkpoint.py --source sec
 ```
 
-### Step 3.3 — Tokenize Python finance code (3B tokens)
+### Step 3.3 — Tokenize Python code (3B tokens)
 
-**Why:** Code pretraining teaches Python syntax and finance library patterns so the model
-can generate pandas, yfinance, and numpy code at inference time. It is 8% of pretraining.
+**Why:** Code pretraining teaches Python syntax and library patterns so the model can
+generate pandas, yfinance, and numpy code at inference time. It is 8% of pretraining.
+Uses `codeparrot/codeparrot-clean` — 180GB of deduplicated GitHub Python, public, no auth.
 
 ```bash
 python fineweb.py \
-  --source code \
+  --source codeparrot \
   --max-tokens 3B \
-  --code-data /workspace/data/raw/code_train.jsonl \
   --tokenizer-dir /workspace/tokenizer_v2/ \
   --output-dir /workspace/pretrain_data/code/
 
 # Duration: ~30 min on 1× H100
 # Output:   ~30 shards
-# Note:     delete /workspace/data/raw/code_train.jsonl after to free ~5 GB
+# Resume:   if interrupted, run: python fix_checkpoint.py --source codeparrot
+#           then re-run the same command
 ```
 
 ---
@@ -267,26 +270,27 @@ python prepare_sft_data.py \
 # ~267K conversations → ~400 MB
 ```
 
-### Step 5.2 — Convert Finance-Alpaca and FinCoT
+### Step 5.2 — Convert Finance-Alpaca
 
-**Why:** Finance-Alpaca adds breadth (stocks, taxes, loans, crypto) while FinCoT provides
-GPT-4o reasoning traces with <think> tags — the format the model needs for step-by-step
-financial calculations.
+**Why:** Finance-Alpaca adds breadth across stocks, taxes, loans, and crypto Q&A.
+FinCoT (sujet-ai/fincot, FinGPT/fingpt-mt-bench) was removed — both datasets are
+no longer publicly accessible. CoT reasoning comes from Step 5.3 instead.
 
 ```bash
 python prepare_finance_sft.py \
   --output /workspace/data/sft/
 
-# Outputs:
+# Output:
 #   /workspace/data/sft/chat_finance_alpaca.jsonl  (~68K rows)
-#   /workspace/data/sft/chat_fincot.jsonl          (~9.2K rows)
 ```
 
 ### Step 5.3 — Generate finance CoT data (75K examples)
 
-**Why:** 75K GPT-4o mini reasoning traces on FinQA/TAT-QA problems teach the model
+**Why:** 75K GPT-4o mini reasoning traces on FinQA/ConvFinQA problems teach the model
 to show its working with <think> tags. Quality CoT data is the single biggest driver
 of financial reasoning capability at 250M scale.
+TAT-QA and ibm/convfinqa were removed (gated/private) — replaced with
+`ibm-research/finqa` and `TheFinAI/flare-convfinqa` (both public).
 
 ```bash
 # Test with 50 problems first (~$0.15)
@@ -324,20 +328,19 @@ python generate_finance_code.py --resume
 
 ### Step 5.5 — Combine all SFT data
 
-**Why:** All four sources must be merged into one file for sft_train.py.
-The combined file gives: 20% CoT reasoning, 14% Finance-Alpaca, 2% FinCoT,
-1.8% code, 54% SmolTalk general conversation.
+**Why:** All sources must be merged into one file for sft_train.py.
+The combined file gives: ~21% CoT reasoning, ~20% Finance-Alpaca,
+~2% code, ~57% SmolTalk general conversation.
 
 ```bash
 cat /workspace/data/sft/chat_finance_cot.jsonl \
-    /workspace/data/sft/chat_fincot.jsonl \
     /workspace/data/sft/chat_finance_code.jsonl \
     /workspace/data/sft/chat_finance_alpaca.jsonl \
     /workspace/data/sft/chat_train.jsonl \
   > /workspace/data/sft/chat_all_train.jsonl
 
 echo "Total SFT lines: $(wc -l < /workspace/data/sft/chat_all_train.jsonl)"
-# Expected: ~427,000 lines
+# Expected: ~420,000 lines
 ```
 
 ---

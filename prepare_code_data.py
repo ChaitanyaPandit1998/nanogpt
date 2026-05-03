@@ -313,6 +313,25 @@ def collect_from_github(
 
 import re as _re
 
+# Broad finance keywords for Stack Exchange question-level filtering.
+# Intentionally wider than FINANCE_KEYWORDS (which targets code identifiers).
+# The finance signal is in the *question*, not the code variable names.
+_SE_FINANCE_KEYWORDS = [
+    "portfolio", "stock", "equity", "bond", "option", "derivative",
+    "sharpe", "sortino", "drawdown", "volatility", "returns", "yield",
+    "dividend", "valuation", "hedge", "risk", "alpha", "beta",
+    "moving average", "technical analysis", "fundamental analysis",
+    "yfinance", "pandas_datareader", "quantlib", "backtrader",
+    "market", "trading", "investment", "asset", "price", "financial",
+    "cash flow", "earnings", "balance sheet", "income statement",
+]
+
+def _is_finance_question(text: str) -> bool:
+    """Return True if the question text mentions finance topics."""
+    lower = text.lower()
+    return any(kw in lower for kw in _SE_FINANCE_KEYWORDS)
+
+
 def _extract_code_blocks(text: str) -> str:
     """Extract Python code blocks from markdown text."""
     blocks = _re.findall(r"```(?:python)?\s*\n(.*?)```", text, _re.DOTALL)
@@ -377,18 +396,21 @@ def collect_from_stack(
 
             question = row.get("question", "") or ""
             response = row.get("response", "") or ""
-            content  = _extract_code_blocks(response)
 
+            # Layer 1: question must mention finance (broad check on question text)
+            if not _is_finance_question(question):
+                stats["skipped_finance"] += 1
+                continue
+
+            # Layer 2: response must contain extractable Python code
+            content = _extract_code_blocks(response)
             if not content:
                 stats["skipped_quality"] += 1
                 continue
 
+            # Layer 3: code must meet minimum quality bar
             if not is_quality_file(content, min_lines, max_lines):
                 stats["skipped_quality"] += 1
-                continue
-
-            if not is_finance_file(question + " " + content):
-                stats["skipped_finance"] += 1
                 continue
 
             h = md5(content)

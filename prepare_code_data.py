@@ -539,17 +539,12 @@ def collect_from_kaggle(output_path: str, seen_hashes: set, budget: "TokenBudget
         if budget.exhausted():
             break
         try:
-            kernels = kaggle.api.kernels_list(
-                search=keyword, language="python",
-                sort_by="hotness",      # "hotness" is universally valid across API versions
-                page_size=100,
-            )
-            print(f"  '{keyword}': {len(list(kernels))} kernels found")
-            # Re-fetch since list() exhausts the iterator
-            kernels = kaggle.api.kernels_list(
-                search=keyword, language="python",
-                sort_by="hotness", page_size=100,
-            )
+            # Match the minimal CLI: kaggle kernels list -s "keyword"
+            # Extra params (language, sort_by) cause silent empty returns
+            # on some API versions — filter language in Python instead.
+            kernels = list(kaggle.api.kernels_list(search=keyword, page_size=100))
+            kernels = [k for k in kernels if getattr(k, "language", "").lower() == "python"]
+            print(f"  '{keyword}': {len(kernels)} python kernels found")
         except Exception as e:
             print(f"  Search '{keyword}' failed: {e}")
             continue

@@ -296,26 +296,47 @@ def get_muon_momentum(step: int) -> float:
 # Fixed prompts used to spot-check generation quality during training.
 # These run every --sample-every steps so you can eyeball whether the model
 # is learning the chat format and producing coherent responses.
-SAMPLE_PROMPTS = [
-    "What is the Sharpe ratio and how is it calculated?",
-    "Write a Python function to calculate the maximum drawdown of a return series.",
-    "What does a high debt-to-equity ratio tell us about a company?",
-    "Explain discounted cash flow valuation in simple terms.",
-    "What is the difference between Value at Risk and Conditional Value at Risk?",
+# 3 rotating batches — cycles A → B → C every --sample-every steps.
+# Batch A: definitions and code; B: numerical reasoning; C: deeper concepts.
+SAMPLE_PROMPT_BATCHES = [
+    # Batch A — definitions & Python code
+    [
+        "What is the Sharpe ratio and how is it calculated?",
+        "Write a Python function to calculate the maximum drawdown of a return series.",
+        "What does a high debt-to-equity ratio tell us about a company?",
+    ],
+    # Batch B — numerical reasoning (tests <think> tag usage)
+    [
+        "A portfolio returned 12% annually with a standard deviation of 15%. "
+        "The risk-free rate is 3%. What is the Sharpe ratio?",
+        "A company has revenue of $500M, EBITDA of $100M, and enterprise value of $800M. "
+        "What is the EV/EBITDA multiple?",
+        "Write a Python function to compute 20-day Bollinger Bands from a price series.",
+    ],
+    # Batch C — valuation & risk concepts
+    [
+        "Walk me through a discounted cash flow valuation step by step.",
+        "What is the difference between Value at Risk and Conditional Value at Risk?",
+        "Write a Python function to download AAPL stock data with yfinance and compute "
+        "daily log returns.",
+    ],
 ]
 
 @torch.no_grad()
-def sample_responses(model, tokenizer, max_new_tokens=128, temperature=0.8, top_k=50):
-    """Generate one response per SAMPLE_PROMPTS and print them."""
+def sample_responses(model, tokenizer, step, max_new_tokens=200, temperature=0.8, top_k=50):
+    """Generate responses for the current rotating batch and print them."""
     model.eval()
     bos           = tokenizer.get_bos_token_id()
     assistant_end = tokenizer.encode_special("<|assistant_end|>")
     device        = next(model.parameters()).device
 
+    batch_idx   = (step // args.sample_every) % len(SAMPLE_PROMPT_BATCHES)
+    batch_label = ["A", "B", "C"][batch_idx]
+    prompts     = SAMPLE_PROMPT_BATCHES[batch_idx]
+
     print0("\n" + "=" * 60)
-    print0("Generation samples:")
-    for prompt in SAMPLE_PROMPTS:
-        # Build prompt tokens in chat format
+    print0(f"Generation samples (step {step}, batch {batch_label}):")
+    for prompt in prompts:
         ids = tokenizer.render_for_completion({"messages": [
             {"role": "user",      "content": prompt},
             {"role": "assistant", "content": ""},
@@ -401,7 +422,7 @@ for step in range(start_step, num_steps + 1):
 
     # ---- Generation samples ----
     if master_process and args.sample_every > 0 and (last_step or step % args.sample_every == 0):
-        sample_responses(raw_model, tokenizer)
+        sample_responses(raw_model, tokenizer, step)
         raw_model.train()
 
     # ---- Checkpoint ----

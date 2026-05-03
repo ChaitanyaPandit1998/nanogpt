@@ -932,20 +932,40 @@ if __name__ == '__main__':
                         rank=ddp_rank,
                     )
 
-        # Text generation sample — finance-specific prompts to sanity-check
-        # whether the model is absorbing domain knowledge during pretraining.
+        # Text generation sample — 3 rotating batches of finance prompts.
+        # Cycles batch A → B → C → A every 250 steps to give broad coverage
+        # of financial concepts, Python code, and SEC/macro language.
         if ((step > 0 and step % 250 == 0) or last_step) and not use_compile:
             model.eval()
             max_length = 150
-            sample_prompts = [
-                "The Sharpe ratio measures",
-                "def calculate_sharpe_ratio(returns, risk_free_rate):",
-                "In its annual 10-K filing, the company reported",
-                "The Federal Reserve raised interest rates in order to",
+            _pretrain_batches = [
+                # Batch A — financial concepts & ratios
+                [
+                    "The Sharpe ratio measures the excess return per unit of",
+                    "In its annual 10-K filing, the company reported total revenue of",
+                    "The Federal Reserve raised interest rates in order to",
+                    "A company with a current ratio below 1.0 indicates",
+                ],
+                # Batch B — Python finance code
+                [
+                    "def calculate_sharpe_ratio(returns, risk_free_rate):",
+                    "def maximum_drawdown(returns):\n    \"\"\"Peak-to-trough decline.\"\"\"",
+                    "import yfinance as yf\nticker = yf.Ticker(\"AAPL\")\ndf = ticker.history(",
+                    "def portfolio_variance(weights, cov_matrix):",
+                ],
+                # Batch C — valuation & macro reasoning
+                [
+                    "Discounted cash flow analysis estimates the intrinsic value of",
+                    "The price-to-earnings ratio of 25 suggests that investors are",
+                    "When a bond's yield to maturity exceeds its coupon rate,",
+                    "The efficient market hypothesis states that asset prices",
+                ],
             ]
+            batch_idx = (step // 250) % len(_pretrain_batches)
+            sample_prompts = _pretrain_batches[batch_idx]
             sample_rng = torch.Generator(device=device)
             sample_rng.manual_seed(42 + ddp_rank)
-            print0(f"\n{'='*60}\nGeneration samples (step {step}):")
+            print0(f"\n{'='*60}\nGeneration samples (step {step}, batch {['A','B','C'][batch_idx]}):")
             for prompt in sample_prompts:
                 prompt_tokens = tokenizer.encode(prompt)
                 xgen = torch.tensor(prompt_tokens, dtype=torch.long, device=device).unsqueeze(0)

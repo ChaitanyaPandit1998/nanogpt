@@ -248,6 +248,67 @@ else:
     log_file = None
 
 # ---------------------------------------------------------------------------
+# Sample prompts — 3 rotating batches of FinQA-style questions.
+# Run every eval_every steps so you can see whether <think> reasoning
+# is improving alongside the pass@1 accuracy number.
+_RL_SAMPLE_BATCHES = [
+    # Batch A — margin / ratio calculations
+    [
+        "In 2019, the company had revenue of $120M and operating expenses of $85M. "
+        "What was the operating margin?",
+        "A portfolio returned 12% annually with a standard deviation of 15%. "
+        "The risk-free rate is 3%. What is the Sharpe ratio?",
+    ],
+    # Batch B — valuation multiples
+    [
+        "A stock trades at $50 per share. Earnings per share is $2.50. "
+        "What is the P/E ratio, and is it expensive for a mature company?",
+        "A company has enterprise value of $1.2B and EBITDA of $150M. "
+        "What is the EV/EBITDA multiple? How does it compare to a typical 8–10× range?",
+    ],
+    # Batch C — balance sheet & returns
+    [
+        "Company A has total assets of $500M and total liabilities of $300M. "
+        "What is the debt-to-equity ratio?",
+        "An investor bought 100 shares at $40 and sold at $55 after 2 years. "
+        "What is the annualised return?",
+    ],
+]
+
+@torch.no_grad()
+def rl_sample_responses(model, step, max_new_tokens=256, temperature=0.7, top_k=50):
+    """Generate one response per prompt in the current rotating batch."""
+    model.eval()
+    bos           = tokenizer.get_bos_token_id()
+    assistant_end = tokenizer.encode_special("<|assistant_end|>")
+
+    batch_idx   = (step // args.eval_every) % len(_RL_SAMPLE_BATCHES)
+    batch_label = ["A", "B", "C"][batch_idx]
+    prompts     = _RL_SAMPLE_BATCHES[batch_idx]
+
+    print0(f"\n{'='*60}\nRL generation samples (step {step}, batch {batch_label}):")
+    for prompt in prompts:
+        ids = encode_prompt(prompt)
+        x   = torch.tensor([ids], dtype=torch.long, device=device)
+        for _ in range(max_new_tokens):
+            logits, _ = model(x)
+            logits = logits[:, -1, :] / temperature
+            if top_k:
+                v, _ = torch.topk(logits, min(top_k, logits.size(-1)))
+                logits[logits < v[:, [-1]]] = float("-inf")
+            probs    = torch.softmax(logits, dim=-1)
+            next_tok = torch.multinomial(probs, 1)
+            tok_id   = next_tok.item()
+            if tok_id == assistant_end or tok_id == bos:
+                break
+            x = torch.cat([x, next_tok], dim=1)
+        response = tokenizer.decode(x[0, len(ids):].tolist())
+        print0(f"  Q: {prompt}")
+        print0(f"  A: {response.strip()}\n")
+    print0('='*60 + "\n")
+    model.train()
+
+# ---------------------------------------------------------------------------
 # Training setup
 assert args.examples_per_step % ddp_world_size == 0, \
     "--examples-per-step must be divisible by the number of ranks"
@@ -350,7 +411,10 @@ for step in range(start_step, num_steps):
         if master_process and log_file:
             with open(log_file, "a") as _f:
                 _f.write(f"{step} pass@1 {pass1:.4f}\n")
-        model.train()
+        if master_process:
+            rl_sample_responses(model, step)
+        else:
+            model.train()
 
     # ---- Checkpoint (rank 0 only) ----
     if master_process and step > 0 and step % args.save_every == 0:

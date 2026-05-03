@@ -231,7 +231,7 @@ cd /workspace/nanogpt
 # Multi-source weighted pretraining (4× H100 recommended)
 torchrun --nproc_per_node=4 train_gpt.py \
   --tokenizer-dir /workspace/tokenizer_v2/ \
-  --data-sources "/workspace/pretrain_data/fineweb/:0.676,/workspace/pretrain_data/sec/:0.243,/workspace/pretrain_data/code/:0.081" \
+  --data-sources "/workspace/pretrain_data/fineweb/:0.619,/workspace/pretrain_data/sec/:0.286,/workspace/pretrain_data/code/:0.095" \
   --log-dir /workspace/log_v2/
 
 # Config (already set in GPTConfig):
@@ -461,7 +461,7 @@ python eval_finance.py \
 
 | Stage | Formula | Result |
 |---|---|---|
-| **Pretraining** | 37B tokens ÷ 524,288 tokens/step | **70,572 steps** |
+| **Pretraining** | 31.5B tokens ÷ 524,288 tokens/step | **60,119 steps** |
 | **SFT** | ~376M SFT tokens ÷ (B=8 × T=2048 × 1 GPU) | **~23,000 steps** |
 | **RL** | FinQA train examples ÷ `--examples-per-step` | **~312 steps** (default `--examples-per-step 20`) |
 
@@ -472,7 +472,7 @@ python eval_finance.py \
 
 | Stage | Previous | nanogpt 2.0 | Reason |
 |---|---|---|---|
-| Pretraining | ~19,000 steps | **~70,572 steps** | Dataset grew from ~10B → 37B tokens |
+| Pretraining | ~19,000 steps | **~60,119 steps** | 31.5B tokens (FineWeb sample-10BT exhausted at 19.5B) |
 | SFT | ~46,000 steps | **~23,000 steps** | Context doubled (T=1024 → T=2048); each step consumes 2× more tokens |
 | RL | ~312 steps | **~312 steps** | Unchanged — same FinQA dataset and `--examples-per-step 20` |
 

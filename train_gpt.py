@@ -691,9 +691,9 @@ if __name__ == '__main__':
     _parser.add_argument("--data-sources", type=str, default=None,
                          help="Weighted multi-source shards. Format: "
                               "'dir1:w1,dir2:w2,...' e.g. "
-                              "'/workspace/pretrain_data/fineweb/:0.676,"
-                              "/workspace/pretrain_data/sec/:0.243,"
-                              "/workspace/pretrain_data/code/:0.081'")
+                              "'/workspace/pretrain_data/fineweb/:0.619,"
+                              "/workspace/pretrain_data/sec/:0.286,"
+                              "/workspace/pretrain_data/code/:0.095'")
     _parser.add_argument("--log-dir", type=str, default="/workspace/log_v2/",
                          help="Directory for checkpoints and logs (default: /workspace/log_v2/)")
     _args, _ = _parser.parse_known_args()
@@ -790,7 +790,8 @@ if __name__ == '__main__':
     # All param groups carry 'initial_lr'; the scheduler multiplies uniformly:
     #   group["lr"] = group["initial_lr"] * lr_multiplier
 
-    max_steps      = 70572   # ~1 epoch on 37B token dataset with 0.5M token batches
+    max_steps      = 60119   # ~1 epoch on 31.5B token dataset with 0.5M token batches
+                             # (FineWeb-Edu sample-10BT exhausted at 19.5B; 19.5+9+3=31.5B)
     warmup_steps   = 715
     warmdown_ratio = 0.65    # fraction of max_steps spent in warmdown
     final_lr_frac  = 0.1     # minimum LR as a fraction of peak LR

@@ -274,20 +274,21 @@ def _is_finance_python_code(code: str) -> bool:
 def _stream_stackexchange(char_limit: int, doc_cap: int) -> None:
     """Stream Python finance code extracted from Stack Exchange Q&A answers.
 
-    Uses HuggingFaceH4/stack-exchange-preferences — no login required, CC BY-SA 4.0.
-    (bigcode/stack-exchange-instruction was removed from the Hub.)
+    Uses ArmelR/stack-exchange-instruction — no login required, CC BY-SA 4.0.
+    (bigcode/stack-exchange-instruction was removed from the Hub; this dataset
+    has identical question/response fields and 12.2M rows.)
     Filters for Python + finance questions, extracts code blocks from answers.
 
     Covers: quantitative.SE, datascience.SE, stats.SE, stackoverflow.com
     """
     try:
         dataset = _hf_load(
-            "HuggingFaceH4/stack-exchange-preferences",
+            "ArmelR/stack-exchange-instruction",
             split="train",
             streaming=True,
         )
     except Exception as e:
-        print(f"  Could not load stack-exchange-preferences: {e}")
+        print(f"  Could not load stack-exchange-instruction: {e}")
         return
 
     nchars   = 0
@@ -302,9 +303,7 @@ def _stream_stackexchange(char_limit: int, doc_cap: int) -> None:
 
         scanned += 1
         question = row.get("question", "") or ""
-        # chosen is a list of message dicts; last message is the assistant answer
-        chosen   = row.get("chosen", [])
-        response = chosen[-1].get("content", "") if chosen else ""
+        response = row.get("response", "") or ""
 
         # Layer 1: question must be Python + finance
         if not _is_finance_python_question(question):
@@ -332,7 +331,7 @@ def _stream_stackexchange(char_limit: int, doc_cap: int) -> None:
             })
 
     pbar.close()
-    print(f"  Stack Exchange (HF4/preferences): {kept:,} code snippets from {scanned:,} questions "
+    print(f"  Stack Exchange (ArmelR): {kept:,} code snippets from {scanned:,} questions "
           f"({kept / max(1, scanned) * 100:.1f}% yield)")
 
 

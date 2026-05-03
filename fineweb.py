@@ -51,8 +51,10 @@ from size_utils import format_tokens, parse_size
 import argparse
 parser = argparse.ArgumentParser(description="Tokenize pretraining data into .npy shards")
 parser.add_argument("--source",        type=str, default="fineweb",
-                    choices=["fineweb", "sec", "code"],
-                    help="Data source to tokenize (default: fineweb)")
+                    choices=["fineweb", "sec", "code", "codeparrot"],
+                    help="Data source to tokenize (default: fineweb). "
+                         "codeparrot streams codeparrot/github-code Python subset — "
+                         "no auth, ~15-20B Python tokens available.")
 parser.add_argument("--code-data",     type=str, default=None,
                     help="Path to code_train.jsonl from prepare_code_data.py "
                          "(required when --source code)")
@@ -69,10 +71,11 @@ parser.add_argument("--max-tokens",    type=str, default=None,
 args = parser.parse_args()
 
 # Validate code source requires --code-data
-if args.source == "code" and not args.code_data:
-    parser.error("--source code requires --code-data <path/to/code_train.jsonl>")
-if args.source == "code" and not os.path.exists(args.code_data):
-    parser.error(f"--code-data file not found: {args.code_data}")
+if args.source == "code":
+    if not args.code_data:
+        parser.error("--source code requires --code-data <path/to/code_train.jsonl>")
+    if not os.path.exists(args.code_data):
+        parser.error(f"--code-data file not found: {args.code_data}")
 
 # Default output directory per source
 if args.output_dir is None:
@@ -180,6 +183,30 @@ def _iter_code(jsonl_path: str, docs_to_skip: int):
                 yield norm
 
 
+def _iter_codeparrot(docs_to_skip: int):
+    """Stream codeparrot/github-code filtered for Python.
+
+    Public dataset, no auth required. Contains ~115B tokens across all
+    languages; Python subset alone is ~15-20B tokens.
+    Fields used: 'code' (the file content), 'language' (filter == Python).
+    """
+    ds = load_dataset(
+        "codeparrot/github-code",
+        split="train",
+        streaming=True,
+        trust_remote_code=True,
+        filter_languages=["Python"],   # server-side filter — reduces bandwidth
+    )
+    if docs_to_skip:
+        ds = ds.skip(docs_to_skip)
+    for doc in ds:
+        if doc.get("language") != "Python":
+            continue
+        code = doc.get("code", "") or ""
+        if code.strip():
+            yield {"text": code}
+
+
 def get_source_iterator(source: str, docs_to_skip: int):
     """Return the correct document iterator for the given source."""
     if source == "fineweb":
@@ -188,6 +215,8 @@ def get_source_iterator(source: str, docs_to_skip: int):
         return _iter_sec(docs_to_skip)
     elif source == "code":
         return _iter_code(args.code_data, docs_to_skip)
+    elif source == "codeparrot":
+        return _iter_codeparrot(docs_to_skip)
     else:
         raise ValueError(f"Unknown source: {source}")
 

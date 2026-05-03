@@ -65,12 +65,17 @@ pip install kaggle   # optional — only needed for Kaggle data source
 **Why:** OpenAI key is needed for SFT data generation; Kaggle key improves code data quality.
 
 ```bash
-cp .env.example .env
-# Edit .env and fill in your keys:
-nano .env
-# OPENAI_API_KEY=sk-...
-# KAGGLE_USERNAME=your-username   (optional)
-# KAGGLE_KEY=your-key             (optional)
+# Write your keys directly — no editor needed on minimal RunPod containers
+cat > .env << 'EOF'
+OPENAI_API_KEY=sk-your-openai-key-here
+KAGGLE_USERNAME=your-kaggle-username
+KAGGLE_KEY=your-kaggle-key
+HF_TOKEN=hf_your-huggingface-token-here
+EOF
+
+# If you prefer a text editor, install one first:
+#   apt-get install -y nano   then   nano .env
+#   apt-get install -y vim    then   vim .env
 ```
 
 ### Step 0.5 — Create workspace directories

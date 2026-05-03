@@ -46,6 +46,16 @@ def load_env(env_file: str = None) -> bool:
         return False
 
     load_dotenv(target, override=False)
+
+    # HuggingFace token aliasing:
+    # - huggingface_hub >= 0.17 reads HF_TOKEN
+    # - older versions read HUGGING_FACE_HUB_TOKEN
+    # Set both so either library version works without user action.
+    import os as _os
+    hf_token = _os.environ.get("HF_TOKEN")
+    if hf_token:
+        _os.environ.setdefault("HUGGING_FACE_HUB_TOKEN", hf_token)
+
     return True
 
 

@@ -54,7 +54,7 @@ parser.add_argument("--pretrain-dir",     type=str, required=True,      help="di
 parser.add_argument("--pretrain-step",    type=int, default=None,        help="which pretrain step to load (default: last)")
 # Output
 parser.add_argument("--checkpoint-dir",  type=str, default="/workspace/sft_checkpoints_v2/", help="where to save SFT checkpoints")
-parser.add_argument("--save-every",      type=int, default=2500,         help="save a checkpoint every N steps (always saves at the final step)")
+parser.add_argument("--save-every",      type=int, default=5000,         help="save a checkpoint every N steps (always saves at the final step)")
 # Training horizon
 parser.add_argument("--max-epochs",      type=int, default=1,            help="number of passes over the training data (default: 1). "
                                                                               "Multi-epoch training on static SFT data degrades quality via overfitting — "

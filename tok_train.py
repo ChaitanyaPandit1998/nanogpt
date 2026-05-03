@@ -274,20 +274,20 @@ def _is_finance_python_code(code: str) -> bool:
 def _stream_stackexchange(char_limit: int, doc_cap: int) -> None:
     """Stream Python finance code extracted from Stack Exchange Q&A answers.
 
-    Uses bigcode/stack-exchange-instruction — no login required, CC BY-SA 4.0.
+    Uses HuggingFaceH4/stack-exchange-preferences — no login required, CC BY-SA 4.0.
+    (bigcode/stack-exchange-instruction was removed from the Hub.)
     Filters for Python + finance questions, extracts code blocks from answers.
 
     Covers: quantitative.SE, datascience.SE, stats.SE, stackoverflow.com
     """
     try:
         dataset = _hf_load(
-            "bigcode/stack-exchange-instruction",
+            "HuggingFaceH4/stack-exchange-preferences",
             split="train",
             streaming=True,
-            trust_remote_code=True,
         )
     except Exception as e:
-        print(f"  Could not load stack-exchange-instruction: {e}")
+        print(f"  Could not load stack-exchange-preferences: {e}")
         return
 
     nchars   = 0
@@ -302,7 +302,9 @@ def _stream_stackexchange(char_limit: int, doc_cap: int) -> None:
 
         scanned += 1
         question = row.get("question", "") or ""
-        response = row.get("response", "") or ""
+        # chosen is a list of message dicts; last message is the assistant answer
+        chosen   = row.get("chosen", [])
+        response = chosen[-1].get("content", "") if chosen else ""
 
         # Layer 1: question must be Python + finance
         if not _is_finance_python_question(question):
@@ -330,7 +332,7 @@ def _stream_stackexchange(char_limit: int, doc_cap: int) -> None:
             })
 
     pbar.close()
-    print(f"  Stack Exchange: {kept:,} code snippets from {scanned:,} questions "
+    print(f"  Stack Exchange (HF4/preferences): {kept:,} code snippets from {scanned:,} questions "
           f"({kept / max(1, scanned) * 100:.1f}% yield)")
 
 

@@ -2,7 +2,7 @@
 
 > Complete step-by-step guide to train the 250M finance-specialised model from scratch.
 > Architecture: 20 layers, 768 hidden dim, 2048 context, ~250M params.
-> Data: 37B tokens (FineWeb-Edu 68% + PleIAs/SEC 24% + Python code 8%).
+> Data: 31.5B tokens (FineWeb-Edu 61.9% + PleIAs/SEC 28.6% + Python code 9.5%).
 > Estimated cost: ~$290–$320 on RunPod 4× H100 SXM.
 
 ---
@@ -11,9 +11,9 @@
 
 - RunPod account with access to H100 SXM GPUs
 - Python 3.10+, Git, CUDA 12.8
-- OpenAI API key (for SFT data generation, ~$35)
+- HuggingFace account + write token — required to download pre-generated SFT datasets (Steps 5.3 and 5.4)
+- OpenAI API key — only needed if regenerating CoT or code data from scratch (already on HuggingFace)
 - Kaggle API key (optional, improves code data quality)
-- HuggingFace account (optional — for higher API rate limits)
 
 ---
 
@@ -251,7 +251,7 @@ torchrun --standalone --nproc_per_node=4 train_gpt.py \
 | Steps 1–100 | Loss drops from ~10 → ~5 |
 | Step 250 | First val loss printed — should be < 5.0 |
 | Step 1,000 | Val loss < 3.5 |
-| Step 70,572 | Val loss ~2.8–3.0, MFU > 15% |
+| Step 60,119 | Val loss ~2.8–3.0, MFU > 15% |
 
 ---
 
@@ -526,12 +526,12 @@ python eval_finance.py \
 | Phase 2 | Code data collection | ~1–2 hours | ~$5 |
 | Phase 3 | Data tokenization (3 sources) | ~5 hours | ~$20 |
 | Phase 4 | **Pretraining** | **~16 hours (4× H100)** | **~$264** |
-| Phase 5 | SFT data generation (API) | ~4 hours | ~$35 |
+| Phase 5 | SFT data prep (HF download + SmolTalk + Alpaca) | ~30 min | ~$0 |
 | Phase 6 | **SFT training** | **~2–3 hours** | **~$8** |
 | Phase 7 | Evaluation | ~1 hour | ~$4 |
 | Phase 8 | RL (optional) | ~3 hours | ~$12 |
-| | **Total (without RL)** | **~30 hours** | **~$336** |
-| | **Total (with RL)** | **~33 hours** | **~$348** |
+| | **Total (without RL)** | **~26 hours** | **~$301** |
+| | **Total (with RL)** | **~29 hours** | **~$313** |
 
 ---
 

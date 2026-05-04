@@ -3,14 +3,25 @@ generate_finance_code.py
 ~~~~~~~~~~~~~~~~~~~~~~~~
 Generate finance Python code SFT examples via GPT-4o mini.
 
-Produces 7,500 instruction-response pairs covering:
-  - Financial metric functions (Sharpe, Sortino, CAGR, drawdown...)
-  - pandas/yfinance data patterns
-  - Portfolio analytics
-  - Basic financial calculations
+Produces 900 instruction-response pairs across 10 core finance topics,
+each covered from 9 distinct task angles:
 
-Each example has a user question and an assistant response that is
-syntactically valid, complete Python code (no stubs, no placeholders).
+  Topics (10): Sharpe ratio, maximum drawdown, CAGR, portfolio variance,
+               VaR & CVaR, NPV & IRR, beta & alpha, annualised volatility,
+               ROE & profit margins, moving averages
+
+  Task types (9 × 12 templates = 108 prompts per topic):
+    1. Basic implementation
+    2. Docstring + example usage
+    3. Edge case handling
+    4. Input format variants (list / Series / DataFrame / ndarray)
+    5. Type hints
+    6. Explain then implement
+    7. From raw price series
+    8. Rolling / windowed version
+    9. Compare two approaches on the same data
+
+Total prompts: 1,080  →  target 900 valid examples (after ~17% discard).
 
 Quality validators before saving:
   1. ast.parse() — code must be syntactically valid Python
@@ -20,16 +31,19 @@ Quality validators before saving:
 Output: /workspace/data/sft/chat_finance_code.jsonl
 
 Usage:
-  python generate_finance_code.py                    # full 7.5K run
-  python generate_finance_code.py --max-examples 50  # quick test
-  python generate_finance_code.py --resume           # continue interrupted run
+  python generate_finance_code.py                      # full 900-example run
+  python generate_finance_code.py --max-examples 20    # quick test
+  python generate_finance_code.py --resume             # continue interrupted run
 """
+
+from __future__ import annotations
 
 import argparse
 import ast
 import json
 import os
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
 from openai import OpenAI
@@ -38,9 +52,7 @@ from tqdm import tqdm
 from size_utils import load_env
 
 # ---------------------------------------------------------------------------
-# Credentials — loaded from .env file in the project root, then from
-# environment variables. Create a .env file (see .env.example) or export:
-#   export OPENAI_API_KEY=sk-...
+# Credentials
 
 load_env()
 OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY", "")
@@ -48,130 +60,279 @@ OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY", "")
 # ---------------------------------------------------------------------------
 # Config
 
-MODEL             = "gpt-4o-mini"
-TARGET_EXAMPLES   = 7_500
-CHECKPOINT_EVERY  = 100
-MAX_RETRIES       = 3
-RETRY_DELAY_BASE  = 5
-INTER_CALL_DELAY  = 0.4
+MODEL            = "gpt-4o-mini"
+TARGET_EXAMPLES  = 1_000
+MAX_WORKERS      = 10       # concurrent API calls
+CHECKPOINT_EVERY = 100
+MAX_RETRIES      = 3
+RETRY_DELAY_BASE = 5
+INTER_CALL_DELAY = 0.4
 
 # ---------------------------------------------------------------------------
-# Finance code topic list
-# Each tuple is (topic, hint) — hint guides the specific function to write
+# Topics — 11 advanced topics: portfolio optimisation, Black-Scholes,
+# DCF, Monte Carlo, and technical indicators
 
 TOPICS = [
-    # --- Core financial metrics ---
-    ("Sharpe ratio", "given daily returns list/Series and annual risk-free rate"),
-    ("annualised Sharpe ratio", "given monthly returns and annual risk-free rate"),
-    ("Sortino ratio", "using only downside deviation, given daily returns"),
-    ("Calmar ratio", "annual return divided by max drawdown"),
-    ("information ratio", "active return over tracking error vs benchmark"),
-    ("CAGR", "compound annual growth rate given start value, end value, years"),
-    ("maximum drawdown", "peak-to-trough percentage decline in a return series"),
-    ("drawdown series", "full drawdown time series from a returns Series"),
-    ("annualised volatility", "given daily returns, annualise with sqrt(252)"),
-    ("rolling volatility", "rolling 30-day annualised volatility with pandas"),
-    ("Value at Risk (VaR)", "parametric VaR at 95% confidence from daily returns"),
-    ("historical VaR", "historical simulation VaR at given confidence level"),
-    ("Conditional VaR (CVaR)", "expected shortfall beyond the VaR threshold"),
-    ("beta coefficient", "portfolio beta relative to a benchmark using OLS"),
-    ("alpha (Jensen's alpha)", "alpha from CAPM given portfolio and benchmark returns"),
-    ("tracking error", "annualised tracking error vs benchmark returns"),
-    ("portfolio return", "weighted average return given weights and asset returns"),
-    ("portfolio variance", "given weights and covariance matrix"),
-    ("portfolio Sharpe ratio", "for a multi-asset portfolio given weights and returns"),
-    ("equal-weight portfolio", "construct equal-weight portfolio from a list of assets"),
-    # --- yfinance patterns ---
-    ("download stock data with yfinance", "single ticker, date range, return OHLCV DataFrame"),
-    ("download multiple tickers", "list of tickers, return Adj Close prices"),
-    ("calculate daily returns from yfinance", "download then compute pct_change"),
-    ("yfinance Ticker info", "get company name, sector, market cap for a ticker"),
-    ("dividend history", "download and display dividend history for a ticker"),
-    ("52-week high/low", "compute from yfinance history data"),
-    # --- pandas finance patterns ---
-    ("simple moving average (SMA)", "20-day SMA on a price Series"),
-    ("exponential moving average (EMA)", "12-day EMA with pandas ewm()"),
-    ("MACD indicator", "12/26 EMA diff and 9-day signal line"),
-    ("Bollinger Bands", "20-day SMA ± 2 standard deviations"),
-    ("RSI", "14-period Relative Strength Index"),
-    ("rolling Sharpe ratio", "252-day rolling Sharpe ratio on returns"),
-    ("cumulative returns", "(1 + returns).cumprod() - 1 from daily returns"),
-    ("log returns", "log(P_t / P_{t-1}) from a price Series"),
-    ("monthly resampling", "resample daily OHLCV to monthly using pandas resample"),
-    ("correlation matrix", "pairwise correlations of asset returns"),
-    ("covariance matrix", "annualised covariance matrix for a returns DataFrame"),
-    ("mean-variance weights", "minimum-variance portfolio weights via numpy.linalg"),
-    # --- Financial ratios (fundamental) ---
-    ("P/E ratio", "price divided by EPS, handle zero/negative EPS"),
-    ("price-to-book ratio", "market cap divided by book value"),
-    ("EV/EBITDA", "enterprise value divided by EBITDA"),
-    ("debt-to-equity ratio", "total debt divided by shareholders equity"),
-    ("current ratio", "current assets divided by current liabilities"),
-    ("quick ratio", "(current assets - inventory) / current liabilities"),
-    ("gross margin", "(revenue - COGS) / revenue as percentage"),
-    ("operating margin", "EBIT / revenue as percentage"),
-    ("net profit margin", "net income / revenue as percentage"),
-    ("return on equity (ROE)", "net income / average shareholders equity"),
-    ("return on assets (ROA)", "net income / average total assets"),
-    ("return on invested capital (ROIC)", "NOPAT / invested capital"),
-    ("asset turnover", "revenue / average total assets"),
-    ("revenue growth rate", "YoY percentage change in revenue"),
-    ("earnings per share (EPS)", "net income minus preferred dividends / diluted shares"),
-    ("dividend yield", "annual dividend per share / stock price"),
-    ("payout ratio", "dividends / net income as percentage"),
-    ("free cash flow yield", "FCF / market cap as percentage"),
-    # --- Time value of money ---
-    ("present value", "PV of a single future cash flow given rate and periods"),
-    ("future value", "FV of a present value given rate and periods"),
-    ("NPV", "net present value of a series of cash flows and a discount rate"),
-    ("IRR", "internal rate of return using numpy.irr or scipy"),
-    ("annuity payment", "PMT given loan amount, rate, and number of periods"),
-    ("compound interest", "final amount given principal, rate, compounding periods, years"),
-    ("loan amortisation schedule", "DataFrame with payment, interest, principal, balance"),
-    ("bond price", "PV of coupon payments plus PV of face value"),
-    ("bond yield to maturity", "iterative/scipy solve for YTM given price and cash flows"),
-    ("WACC", "weighted average cost of capital given equity, debt costs and weights"),
-    # --- Portfolio & risk management ---
-    ("portfolio optimisation (min variance)", "scipy.optimize to find minimum-variance weights"),
-    ("efficient frontier points", "sweep target returns and compute min-variance portfolios"),
-    ("Monte Carlo portfolio simulation", "simulate N random portfolios, plot risk/return"),
-    ("rebalancing drift", "compute how much each asset has drifted from target weight"),
-    ("dollar-cost averaging simulation", "periodic fixed investment over N months"),
-    ("Kelly criterion", "optimal bet/position size given win prob and payoff ratio"),
-    ("position sizing", "number of shares given portfolio size, risk %, stop-loss"),
-    # --- Options / derivatives ---
-    ("Black-Scholes call price", "call option price from S, K, T, r, sigma"),
-    ("Black-Scholes put price", "put option price using put-call parity"),
-    ("Black-Scholes delta", "call delta dC/dS"),
-    ("implied volatility (bisection)", "solve for sigma given observed option price"),
-    # --- Data cleaning / utilities ---
-    ("winsorise returns", "clip extreme returns at given percentile"),
-    ("fill missing prices", "forward-fill then backward-fill price gaps"),
-    ("normalise price series", "rescale so series starts at 100"),
-    ("annualise returns", "convert holding-period return to annualised rate"),
-    ("convert monthly to annual return", "compound 12 monthly returns"),
-    ("benchmark-relative returns", "excess returns over a benchmark series"),
+    {
+        "name": "minimum variance portfolio optimisation",
+        "hint": "use scipy.optimize.minimize to find weights that minimise w^T @ C @ w; "
+                "constraints: weights sum to 1; bounds: each weight between 0 and 1",
+        "slug": "min_variance_portfolio",
+    },
+    {
+        "name": "maximum Sharpe ratio portfolio",
+        "hint": "use scipy.optimize.minimize to maximise Sharpe ratio (negate it as the objective); "
+                "inputs: expected returns vector, covariance matrix, risk-free rate; "
+                "constraints: weights sum to 1, weights >= 0",
+        "slug": "max_sharpe_portfolio",
+    },
+    {
+        "name": "efficient frontier",
+        "hint": "sweep a range of target returns, solve for minimum variance at each target using scipy.optimize; "
+                "return arrays of portfolio volatilities and returns for plotting",
+        "slug": "efficient_frontier",
+    },
+    {
+        "name": "Black-Scholes option pricing",
+        "hint": "call price: S*N(d1) - K*exp(-r*T)*N(d2); put via put-call parity; "
+                "d1 = (ln(S/K) + (r + 0.5*sigma^2)*T) / (sigma*sqrt(T)); d2 = d1 - sigma*sqrt(T); "
+                "use scipy.stats.norm.cdf for N()",
+        "slug": "black_scholes_pricing",
+    },
+    {
+        "name": "Black-Scholes Greeks",
+        "hint": "delta: N(d1) for call, N(d1)-1 for put; "
+                "gamma: N'(d1) / (S*sigma*sqrt(T)); "
+                "vega: S*N'(d1)*sqrt(T); "
+                "theta: complex formula involving both terms; "
+                "use scipy.stats.norm.pdf for N'()",
+        "slug": "black_scholes_greeks",
+    },
+    {
+        "name": "implied volatility",
+        "hint": "use scipy.optimize.brentq to find sigma such that Black-Scholes price equals the observed market price; "
+                "search bracket [1e-6, 10]; handle cases where market price is below intrinsic value",
+        "slug": "implied_volatility",
+    },
+    {
+        "name": "DCF valuation",
+        "hint": "discount each projected free cash flow by (1+wacc)^t; add terminal value = fcf_final*(1+g)/(wacc-g); "
+                "terminal value also discounted back; sum all to get enterprise value; "
+                "handle cases where wacc <= g",
+        "slug": "dcf_valuation",
+    },
+    {
+        "name": "Monte Carlo portfolio simulation",
+        "hint": "generate N random weight vectors (normalize to sum to 1); "
+                "for each compute annualised return (weights @ mean_returns * 252) and volatility (sqrt(w^T@C@w*252)); "
+                "record Sharpe ratio; return DataFrame of results",
+        "slug": "monte_carlo_portfolio",
+    },
+    {
+        "name": "Monte Carlo option pricing",
+        "hint": "simulate S_T = S0 * exp((r - 0.5*sigma^2)*T + sigma*sqrt(T)*Z) where Z ~ N(0,1); "
+                "call payoff = max(S_T - K, 0); discount mean payoff by exp(-r*T); "
+                "use N=10000+ paths for accuracy",
+        "slug": "monte_carlo_options",
+    },
+    {
+        "name": "RSI and Stochastic oscillator",
+        "hint": "RSI: 100 - 100/(1 + avg_gain/avg_loss) over 14 periods using Wilder smoothing (ewm with alpha=1/14); "
+                "Stochastic %%K: (close - lowest_low) / (highest_high - lowest_low) * 100 over 14 periods; "
+                "%%D: 3-period SMA of %%K",
+        "slug": "rsi_stochastic",
+    },
+    {
+        "name": "Bollinger Bands and Average True Range",
+        "hint": "Bollinger Bands: 20-day SMA ± 2 * rolling std; "
+                "ATR: rolling mean of true range where true range = max(high-low, |high-prev_close|, |low-prev_close|) "
+                "over 14 periods",
+        "slug": "bollinger_atr",
+    },
+    {
+        "name": "beta and alpha",
+        "hint": "beta: cov(portfolio, benchmark) / var(benchmark); "
+                "alpha (Jensen's): mean(portfolio) - beta * mean(benchmark), then annualise by multiplying by 252",
+        "slug": "beta_alpha",
+    },
 ]
 
-# Prompt template variants — each topic gets 3 variants for diversity
-VARIANTS = [
-    "Write a Python function to compute the {topic}. {hint}. "
-    "Use pandas and numpy where appropriate. Return the result.",
+# ---------------------------------------------------------------------------
+# Task types — 9 types × 12 templates each = 108 prompts per topic
 
-    "Implement a Python function for {topic}. {hint}. "
-    "Include a clear docstring and example usage in a comment.",
-
-    "Write a concise Python function that calculates {topic}. {hint}. "
-    "Handle edge cases (NaN, zero values, empty input) gracefully.",
+TASK_TYPES = [
+    {
+        "name": "basic_implementation",
+        "templates": [
+            "Write a Python function to compute {name}. {hint}. Use pandas and numpy where appropriate. Return the result.",
+            "Implement a Python function that calculates {name}. {hint}. Keep it clean and readable.",
+            "Create a function `compute_{slug}` in Python. {hint}. Return a float.",
+            "Write a self-contained Python function for {name}. {hint}. Import any libraries needed at the top.",
+            "Implement {name} as a Python function. {hint}. The function should be reusable.",
+            "Write a Python function called `{slug}` that computes {name}. {hint}.",
+            "Build a Python utility function for {name}. {hint}. Assume inputs are already clean.",
+            "Code a Python function to calculate {name}. {hint}. Return the computed value.",
+            "Write a minimal but correct Python implementation of {name}. {hint}.",
+            "Implement {name} in Python using numpy and pandas. {hint}. Return a scalar result.",
+            "Write a Python function that takes the necessary inputs and returns {name}. {hint}.",
+            "Create a Python function to evaluate {name} given financial data. {hint}.",
+        ],
+    },
+    {
+        "name": "docstring_and_example",
+        "templates": [
+            "Implement {name} in Python. {hint}. Include a full docstring with Parameters, Returns, and an Example section.",
+            "Write a Python function for {name} with a Google-style docstring. {hint}. Add a usage example in a comment at the bottom.",
+            "Create a Python function for {name}. {hint}. The docstring should describe each parameter, the return value, and show one worked example.",
+            "Implement {name} as a Python function. {hint}. Include a docstring and a commented example showing how to call it with realistic values.",
+            "Write a well-documented Python function for {name}. {hint}. Use the docstring to explain the formula and show a concrete example.",
+            "Code {name} as a Python function. {hint}. Document all parameters and include a runnable example in the docstring.",
+            "Implement {name} in Python. {hint}. Include a numpy-style docstring and an example usage comment.",
+            "Write a Python function for {name} with clear documentation. {hint}. Show how to call the function with sample data in the docstring.",
+            "Create a fully documented Python function for {name}. {hint}. Docstring must include description, parameters, return type, and example.",
+            "Implement {name} in Python. {hint}. Add a docstring that explains the mathematical formula and includes a concrete example.",
+            "Write a Python function to compute {name}. {hint}. Include a docstring with a brief description and an example with expected output.",
+            "Code {name} as a Python function with a detailed docstring. {hint}. The example should use realistic financial values.",
+        ],
+    },
+    {
+        "name": "edge_case_handling",
+        "templates": [
+            "Write a Python function for {name} that handles edge cases gracefully. {hint}. Handle: empty input, NaN values, and division by zero.",
+            "Implement {name} in Python. {hint}. The function must handle NaN values, empty Series/arrays, and return np.nan when the result is undefined.",
+            "Create a robust Python function for {name}. {hint}. Guard against: all-NaN input, zero standard deviation, empty arrays, and negative values where invalid.",
+            "Write a Python function for {name}. {hint}. Include input validation: raise ValueError for clearly invalid inputs and return np.nan for degenerate cases.",
+            "Implement {name} in Python with defensive programming. {hint}. Handle missing data, empty inputs, and zero denominators without crashing.",
+            "Write a production-ready Python function for {name}. {hint}. Handle NaN silently, return np.nan for undefined results, never raise on edge-case inputs.",
+            "Code a fault-tolerant Python function for {name}. {hint}. Handle: fewer than 2 data points, all returns being identical, and NaN-filled inputs.",
+            "Implement {name} in Python. {hint}. Edge case checks: empty input returns np.nan, zero variance returns np.nan, NaN values are dropped before calculation.",
+            "Write a Python function for {name} that is safe to use in a pipeline. {hint}. Return np.nan instead of raising exceptions for degenerate inputs.",
+            "Create a Python function for {name} with thorough input validation. {hint}. Check for None, empty collections, non-finite values, and zero denominators.",
+            "Implement {name} in Python. {hint}. After computing the result verify it is finite; return np.nan if not.",
+            "Write a Python function for {name} that handles real-world messy data. {hint}. Drop NaN values first, then guard against remaining edge cases.",
+        ],
+    },
+    {
+        "name": "input_format_variants",
+        "templates": [
+            "Write a Python function for {name} that accepts a plain Python list as input. {hint}. Convert internally to numpy array.",
+            "Implement {name} in Python. {hint}. The function should accept a pandas Series as input.",
+            "Write a Python function for {name} that works with a pandas DataFrame column. {hint}. Accept a DataFrame and a column name as parameters.",
+            "Implement {name} in Python. {hint}. Accept a numpy ndarray as the primary input.",
+            "Write a flexible Python function for {name} that accepts list, numpy array, or pandas Series. {hint}. Normalise the input type at the start of the function.",
+            "Create a Python function for {name}. {hint}. Accept a pandas DataFrame where each column is an asset's return series.",
+            "Implement {name} in Python. {hint}. The function receives a dict mapping ticker symbol to a list of returns.",
+            "Write a Python function for {name} that takes a pandas Series indexed by date. {hint}. Preserve the date index in any output.",
+            "Implement {name} in Python. {hint}. Accept either a list of floats or a numpy array; return a float.",
+            "Write a Python function for {name} where inputs are provided as keyword arguments. {hint}. Use clear parameter names that match standard finance terminology.",
+            "Implement {name} in Python. {hint}. Accept a pandas DataFrame with a 'returns' column and return a scalar.",
+            "Write a Python function for {name} that reads from a CSV file path. {hint}. Load the file with pandas, compute the metric, and return the result.",
+        ],
+    },
+    {
+        "name": "type_hints",
+        "templates": [
+            "Write a Python function for {name} with full type annotations. {hint}. Use Union[list, pd.Series, np.ndarray] for the returns parameter.",
+            "Implement {name} in Python. {hint}. Add PEP 484 type hints to all parameters and the return type.",
+            "Create a type-annotated Python function for {name}. {hint}. Use Optional[float] as the return type to allow returning None on failure.",
+            "Write a Python function for {name} with strict type hints. {hint}. Annotate every parameter and the return type as -> float.",
+            "Implement {name} in Python. {hint}. Use the typing module: annotate inputs as Union[List[float], pd.Series] and return type as float.",
+            "Write a Python function for {name} with type annotations and a brief docstring. {hint}. Return type should be float or np.floating.",
+            "Code {name} as a fully type-annotated Python function. {hint}. Add -> Optional[float] return type that returns None for invalid inputs.",
+            "Implement {name} in Python with type hints throughout. {hint}. Annotate using numpy type aliases where appropriate.",
+            "Write a Python function for {name} using modern Python type hints. {hint}. Parameters and return value should all be annotated.",
+            "Implement {name} as a typed Python function. {hint}. Use pd.Series as the type for return series inputs and float as the return type.",
+            "Create a Python function for {name} with full type annotations. {hint}. The function signature alone should communicate what the function expects.",
+            "Write a Python function for {name}. {hint}. Add type hints that a static type checker like mypy would accept without errors.",
+        ],
+    },
+    {
+        "name": "explain_then_implement",
+        "templates": [
+            "Explain the mathematical formula for {name}, then implement it in Python. {hint}.",
+            "First describe what {name} measures and why it matters in finance. Then write a Python function that implements it. {hint}.",
+            "Walk through the calculation of {name} step by step in a comment block, then implement the function. {hint}.",
+            "Write a Python function for {name}. Before the code, add a comment block explaining the formula and its intuition. {hint}.",
+            "Explain {name} briefly, then implement it as a Python function. {hint}. The explanation should appear as a module-level docstring.",
+            "Describe the inputs, outputs, and formula for {name}, then write the Python implementation. {hint}.",
+            "Provide a plain-English explanation of {name} as a comment, then implement it in Python. {hint}.",
+            "Write a Python implementation of {name}. Start with a docstring that explains the formula intuitively before showing the code. {hint}.",
+            "Teach {name} by first explaining the concept in a comment, then showing the Python code. {hint}. The comment should be clear to a junior analyst.",
+            "Write a Python function for {name} where the docstring walks through the formula derivation before the implementation. {hint}.",
+            "Explain {name} using a simple numerical example in a comment, then implement it in Python. {hint}.",
+            "Before writing the Python code for {name}, add a comment explaining what it measures, the formula, and a typical range of values. {hint}.",
+        ],
+    },
+    {
+        "name": "from_raw_price_series",
+        "templates": [
+            "Write a Python function that takes a raw price series and computes {name}. {hint}. First calculate returns using pct_change(), then compute the metric.",
+            "Implement {name} in Python starting from a list of closing prices, not returns. {hint}. Convert prices to returns inside the function.",
+            "Create a Python function for {name} that accepts a pandas Series of daily prices. {hint}. Compute daily returns internally before calculating the metric.",
+            "Write a Python function for {name} that starts from OHLCV data downloaded via yfinance. {hint}. Extract the Close column, compute returns, then the metric.",
+            "Implement a Python function that downloads stock data for a ticker using yfinance and computes {name}. {hint}.",
+            "Write a Python function that takes a DataFrame with a 'Close' column and returns {name}. {hint}. Handle the price-to-returns conversion inside.",
+            "Create a Python function for {name} that works on raw price data. {hint}. Use log returns (np.log(p / p.shift(1))) rather than simple returns.",
+            "Write a Python function that accepts a numpy array of prices and returns {name}. {hint}. Compute percentage returns from prices first.",
+            "Implement a Python function for {name} that fetches data from yfinance for a given ticker and date range, then computes the metric. {hint}.",
+            "Write a Python function that reads closing prices from a CSV file and computes {name}. {hint}. Use pandas to load the file and pct_change() for returns.",
+            "Create a Python pipeline function that takes a list of prices, converts to returns, and computes {name}. {hint}. Return both the returns series and the final metric.",
+            "Implement {name} in Python where the input is a pandas DataFrame with columns ['date', 'close']. {hint}. Compute returns from the close column.",
+        ],
+    },
+    {
+        "name": "rolling_windowed",
+        "templates": [
+            "Write a Python function that computes a rolling {name} over a given window. {hint}. Use pandas rolling() and return a Series.",
+            "Implement a rolling version of {name} in Python. {hint}. Accept a window parameter (default 252 for annual) and return a pandas Series.",
+            "Create a Python function that calculates {name} on an expanding window. {hint}. Use pandas expanding() to grow the window from the start of the series.",
+            "Write a Python function for rolling {name} with a configurable window size. {hint}. Return a Series aligned with the input index.",
+            "Implement {name} as a rolling metric in Python. {hint}. Window defaults to 60 trading days. Handle the NaN values at the start of the series.",
+            "Write a Python function that computes {name} over a 252-day rolling window. {hint}. Use .apply() on a pandas rolling object.",
+            "Create a function that tracks {name} over time using a rolling window. {hint}. Return a DataFrame containing both the input returns and the rolling metric.",
+            "Implement rolling {name} in Python. {hint}. Allow the user to pass min_periods to control when the first valid value appears.",
+            "Write a Python function for {name} that works in both full-series and rolling modes. {hint}. If window is None compute on the full series; otherwise compute rolling.",
+            "Implement a time-series version of {name} using a sliding window. {hint}. Default window is 90 days; return a pd.Series with the same index as input.",
+            "Write a Python function that computes monthly {name} from daily data. {hint}. Resample to monthly using pandas resample('ME'), then apply the metric.",
+            "Create a Python function for {name} that returns both the current value and a rolling history. {hint}. Return a dict with 'current' (float) and 'history' (Series) keys.",
+        ],
+    },
+    {
+        "name": "compare_two_approaches",
+        "templates": [
+            "Implement two versions of {name} in Python and compare them on the same sample data. {hint}. Show the output of both and the difference between them.",
+            "Write a Python script that computes {name} using two different methods. {hint}. Run both on identical synthetic data and print a side-by-side comparison.",
+            "Create two Python functions for {name} — one simple and one more precise. {hint}. Call both with the same inputs and show how the results differ.",
+            "Implement {name} two ways in Python. {hint}. First a loop-based approach, then a vectorised numpy/pandas approach. Compare speed and output.",
+            "Write Python code that calculates {name} using two approaches. {hint}. Demonstrate both produce the same (or similar) result using assert or print.",
+            "Implement a simple and a robust version of {name} in Python. {hint}. The robust version handles NaN and edge cases the simple version ignores.",
+            "Write two Python implementations of {name}: one using pandas built-ins and one using pure numpy. {hint}. Compare results on the same data.",
+            "Create a Python module with two functions for {name}. {hint}. One optimised for readability, one for speed. Show when you would prefer each.",
+            "Implement {name} in Python using an analytical formula and also via a numerical/simulation approach. {hint}. Run both and compare the outputs.",
+            "Write Python code showing two approaches to {name}. {hint}. First implement from scratch using basic operations, then show the equivalent library shortcut.",
+            "Implement {name} two ways in Python. {hint}. Approach 1: step-by-step explicit calculation. Approach 2: compact one-liner using pandas/numpy. Show both produce the same result.",
+            "Create a Python comparison of two methods for computing {name}. {hint}. Use comments to explain when each approach is preferred in practice.",
+        ],
+    },
 ]
 
 
 def build_prompts() -> list[str]:
-    """Expand topic list × variants into a flat list of prompts."""
+    """Expand topics × task types × templates into a flat list of prompts.
+
+    Returns 1,080 prompts: 10 topics × 9 task types × 12 templates.
+    """
     prompts = []
-    for topic, hint in TOPICS:
-        for template in VARIANTS:
-            prompts.append(template.format(topic=topic, hint=hint))
+    for topic in TOPICS:
+        for task in TASK_TYPES:
+            for template in task["templates"]:
+                prompts.append(
+                    template.format(
+                        name=topic["name"],
+                        hint=topic["hint"],
+                        slug=topic["slug"],
+                    )
+                )
     return prompts
 
 
@@ -193,12 +354,12 @@ STUB_PATTERNS = [
     "# implement",
     "# your code here",
     "# fill in",
-    "...",
+    # "..." removed — causes false positives in scipy/type-hint patterns like
+    # minimize(fun, x0, ...) or Optional[float] = ...
 ]
 
 
 def is_complete(code: str) -> bool:
-    """Return False if the code is a stub or placeholder."""
     lower = code.lower()
     for pat in STUB_PATTERNS:
         if pat.lower() in lower:
@@ -207,7 +368,6 @@ def is_complete(code: str) -> bool:
 
 
 def has_substance(code: str) -> bool:
-    """Return True if there are at least 5 non-comment, non-blank lines."""
     lines = [
         l for l in code.splitlines()
         if l.strip() and not l.strip().startswith("#")
@@ -216,13 +376,10 @@ def has_substance(code: str) -> bool:
 
 
 def extract_code(response: str) -> str:
-    """Extract Python code block from markdown response."""
-    # Try ```python ... ``` first
     import re
     match = re.search(r"```(?:python)?\s*\n(.*?)```", response, re.DOTALL)
     if match:
         return match.group(1).strip()
-    # Fallback: use entire response if it looks like code
     if "def " in response or "import " in response:
         return response.strip()
     return response.strip()
@@ -258,7 +415,7 @@ def call_api(client: OpenAI, prompt: str) -> str | None:
                     {"role": "user", "content": prompt},
                 ],
                 temperature=0.7,
-                max_tokens=500,
+                max_tokens=600,
             )
             time.sleep(INTER_CALL_DELAY)
             return resp.choices[0].message.content.strip()
@@ -294,10 +451,10 @@ def save_checkpoint(path: str, completed: set):
 
 def main():
     parser = argparse.ArgumentParser(description="Generate finance Python code SFT data")
-    parser.add_argument("--output",       default="/workspace/data/sft/chat_finance_code.jsonl",
+    parser.add_argument("--output",       default="/workspace/data/sft/chat_finance_code_v2.jsonl",
                         help="Output JSONL file")
-    parser.add_argument("--max-examples", type=int, default=None,
-                        help="Stop after this many valid examples (default: all prompts)")
+    parser.add_argument("--max-examples", type=int, default=TARGET_EXAMPLES,
+                        help=f"Stop after this many valid examples (default: {TARGET_EXAMPLES})")
     parser.add_argument("--resume",       action="store_true",
                         help="Resume from checkpoint")
     args = parser.parse_args()
@@ -314,48 +471,63 @@ def main():
     Path(args.output).parent.mkdir(parents=True, exist_ok=True)
     checkpoint_path = args.output.replace(".jsonl", "_checkpoint.json")
 
-    client   = OpenAI(api_key=OPENAI_API_KEY)
-    prompts  = build_prompts()
+    client    = OpenAI(api_key=OPENAI_API_KEY)
+    prompts   = build_prompts()
     completed = load_checkpoint(checkpoint_path) if args.resume else set()
 
+    todo = [(idx, prompt) for idx, prompt in enumerate(prompts) if idx not in completed]
+
     print(f"Total prompts : {len(prompts):,}")
-    print(f"Target        : {args.max_examples or len(prompts):,} valid examples")
+    print(f"Remaining     : {len(todo):,}")
+    print(f"Target        : {args.max_examples:,} valid examples")
+    print(f"Workers       : {MAX_WORKERS}")
     print(f"Output        : {args.output}\n")
 
     generated = 0
     discarded = 0
 
+    def _process(item: tuple[int, str]) -> tuple[int, dict | None]:
+        idx, prompt = item
+        response = call_api(client, prompt)
+        if response and is_valid_example(response):
+            return idx, {"messages": [
+                {"role": "user",      "content": prompt},
+                {"role": "assistant", "content": response},
+            ]}
+        return idx, None
+
     with open(args.output, "a" if args.resume else "w", encoding="utf-8") as out_f:
-        for idx, prompt in enumerate(tqdm(prompts, desc="Finance code")):
-            if idx in completed:
-                continue
-            if args.max_examples and generated >= args.max_examples:
-                tqdm.write(f"Target of {args.max_examples} examples reached.")
-                break
+        with ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
+            futures = {executor.submit(_process, item): item for item in todo}
+            pbar = tqdm(total=len(todo), desc="Finance code")
+            try:
+                for future in as_completed(futures):
+                    idx, example = future.result()
+                    completed.add(idx)
 
-            response = call_api(client, prompt)
+                    if example:
+                        out_f.write(json.dumps(example, ensure_ascii=False) + "\n")
+                        generated += 1
+                    else:
+                        discarded += 1
 
-            if response and is_valid_example(response):
-                example = {
-                    "messages": [
-                        {"role": "user",      "content": prompt},
-                        {"role": "assistant", "content": response},
-                    ]
-                }
-                out_f.write(json.dumps(example, ensure_ascii=False) + "\n")
-                generated += 1
-            else:
-                discarded += 1
+                    pbar.update(1)
 
-            completed.add(idx)
+                    if len(completed) % CHECKPOINT_EVERY == 0:
+                        save_checkpoint(checkpoint_path, completed)
+                        out_f.flush()
+                        tqdm.write(
+                            f"  Checkpoint | generated: {generated:,} | "
+                            f"discarded: {discarded:,}"
+                        )
 
-            if len(completed) % CHECKPOINT_EVERY == 0:
-                save_checkpoint(checkpoint_path, completed)
-                out_f.flush()
-                tqdm.write(
-                    f"  Checkpoint | generated: {generated:,} | "
-                    f"discarded: {discarded:,}"
-                )
+                    if generated >= args.max_examples:
+                        tqdm.write(f"Target of {args.max_examples} examples reached.")
+                        for f in futures:
+                            f.cancel()
+                        break
+            finally:
+                pbar.close()
 
     save_checkpoint(checkpoint_path, completed)
     print(f"\nDone.")

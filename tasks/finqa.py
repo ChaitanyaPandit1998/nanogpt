@@ -49,43 +49,57 @@ def load_finqa(split: str = "train") -> list[dict]:
     """
     Load FinQA from HuggingFace and return a list of example dicts.
 
+    Tries ibm-research/finqa first; falls back to TheFinAI/flare-convfinqa
+    if the FinQA dataset script is no longer supported (HF deprecated loading
+    scripts in 2025 — ibm-research/finqa uses one).
+
     Each dict has:
       question  — full prompt including context + question (for encode_prompt)
       answer    — gold numerical answer string (e.g. "15.3%", "2.5", "-1234")
       _raw_q    — original question text (for logging)
-
-    The context is prepended to the question so rl_train.py's encode_prompt()
-    (which only takes a single string) works without modification.
     """
+    # Try ibm-research/finqa first (richer context + tables)
     try:
-        ds = load_dataset("ibm-research/finqa", split=split, trust_remote_code=True)
+        ds = load_dataset("ibm-research/finqa", split=split)
+        examples = []
+        for row in ds:
+            context  = _format_context(row)
+            question = row.get("question", "")
+            answer   = str(row.get("answer", "")).strip()
+            full_question = (
+                f"Context:\n{context[:1800]}\n\nQuestion: {question}"
+                if context else question
+            )
+            examples.append({
+                "question": full_question,
+                "answer":   answer,
+                "_raw_q":   question,
+            })
+        return examples
+    except Exception:
+        pass  # fall through to ConvFinQA
+
+    # Fallback: TheFinAI/flare-convfinqa (no dataset script, always works)
+    # split mapping: FinQA "test" → ConvFinQA "valid"
+    hf_split = "valid" if split == "test" else split
+    try:
+        ds = load_dataset("TheFinAI/flare-convfinqa", split=hf_split)
     except Exception as e:
         raise RuntimeError(
-            f"Could not load FinQA ({split}): {e}\n"
-            "Install with: pip install datasets\n"
-            "Dataset: ibm-research/finqa on HuggingFace"
+            f"Could not load FinQA or ConvFinQA ({split}): {e}\n"
+            "Install with: pip install datasets"
         )
 
     examples = []
     for row in ds:
-        context  = _format_context(row)
-        question = row.get("question", "")
+        question = row.get("query", "") or ""
         answer   = str(row.get("answer", "")).strip()
-
-        # Combine context + question into one string.
-        # rl_train.py passes this directly to tokenizer.render_for_completion()
-        # as the user message — no changes needed to encode_prompt().
-        if context:
-            full_question = f"Context:\n{context[:1800]}\n\nQuestion: {question}"
-        else:
-            full_question = question
-
-        examples.append({
-            "question": full_question,   # passed to encode_prompt() unchanged
-            "answer":   answer,          # gold answer for compute_reward()
-            "_raw_q":   question,        # original question for logging
-        })
-
+        if question:
+            examples.append({
+                "question": question,
+                "answer":   answer,
+                "_raw_q":   question,
+            })
     return examples
 
 

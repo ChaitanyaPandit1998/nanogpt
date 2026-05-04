@@ -3,9 +3,9 @@ generate_finance_cot.py
 ~~~~~~~~~~~~~~~~~~~~~~~
 Generate chain-of-thought (CoT) financial reasoning examples for SFT training.
 
-Loads FinQA, TAT-QA, and ConvFinQA train splits from HuggingFace, calls GPT-4o mini
-to generate <think>-tagged reasoning traces, and saves to JSONL in the standard
-conversation format used by sft_train.py.
+Loads ConvFinQA train split from HuggingFace, calls GPT-4o mini to generate
+<think>-tagged reasoning traces, and saves to JSONL in the standard conversation
+format used by sft_train.py.
 
 Generates 3 traces per problem:
   Trace 1 — Standard step-by-step reasoning
@@ -13,31 +13,19 @@ Generates 3 traces per problem:
   Trace 3 — Journey Learning (20%): deliberate error + self-correction
              Alternative approach (80%): verify-then-answer style
 
-Total output: ~75K examples from ~26.5K unique problems across 3 datasets.
-Estimated API cost: ~$30 using GPT-4o mini.
+Total output: ~26K examples from 8,891 ConvFinQA problems.
+Estimated API cost: ~$20 using GPT-4o mini.
+Runtime with 20 parallel workers: ~1.5 hours.
+
+Note: FinQA (ibm-research/finqa) removed — dataset script deprecated by HuggingFace.
 
 Usage:
-  # Full run
-  python generate_finance_cot.py
-
-  # Test with small sample first
-  python generate_finance_cot.py --max-problems 50
-
-  # Resume interrupted run
-  python generate_finance_cot.py --resume
-
-  # Single dataset only
-  python generate_finance_cot.py --datasets finqa
-
-  # Custom output path
-  python generate_finance_cot.py --output /workspace/data/sft/chat_finance_cot.jsonl
+  python generate_finance_cot.py                      # full run (~26K examples)
+  python generate_finance_cot.py --max-problems 50    # quick test
+  python generate_finance_cot.py --resume             # continue interrupted run
+  python generate_finance_cot.py --output ./data/sft/chat_finance_cot.jsonl
 
 Output: /workspace/data/sft/chat_finance_cot.jsonl (default)
-
-Dataset HuggingFace IDs (verify these before running — IDs may change):
-  FinQA:     ibm/finqa
-  TAT-QA:    deepmind/tatqa      (verify on hf.co/datasets)
-  ConvFinQA: ibm/convfinqa       (verify on hf.co/datasets)
 """
 
 import argparse
@@ -45,6 +33,7 @@ import json
 import os
 import random
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
 from datasets import load_dataset
@@ -66,10 +55,11 @@ OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY", "")
 
 MODEL                    = "gpt-4o-mini"
 JOURNEY_LEARNING_FRAC    = 0.20    # Fraction of trace-3s that use self-correction
-CHECKPOINT_EVERY         = 100     # Write checkpoint every N problems
+MAX_WORKERS              = 8       # Reduced from 20 — CoT prompts are token-heavy (SEC filings)
+CHECKPOINT_EVERY         = 100     # Checkpoint every N completed problems
 MAX_RETRIES              = 3       # API retry attempts on failure
 RETRY_DELAY_BASE         = 5       # Seconds (doubles on each retry)
-INTER_CALL_DELAY         = 0.5     # Seconds between API calls (rate limiting)
+INTER_CALL_DELAY         = 0.3     # Seconds between API calls per worker
 MAX_CONTEXT_CHARS        = 2000    # Truncate context beyond this length
 MIN_RESPONSE_TOKENS      = 60      # Discard responses shorter than this
 
@@ -358,13 +348,24 @@ def main():
     total_discarded = 0
     bytes_written   = 0
 
+    # Flatten all (problem_idx, trace_num, system_prompt, user_msg) into one task list
+    todo = []
+    for idx, problem in enumerate(all_problems):
+        if idx in completed_indices:
+            continue
+        use_journey = journey_flags[idx]
+        for trace_num, (sys_p, user_msg) in enumerate(build_prompts(problem, use_journey)):
+            todo.append((idx, trace_num, sys_p, user_msg, problem))
+
     est_api_calls = len(all_problems) * 3
     est_examples  = len(all_problems) * 3
-    est_mb        = est_examples * 900 * 4 / 1e6  # 900 tokens × 4 chars per example
+    est_mb        = est_examples * 900 * 4 / 1e6
     print(f"\nGenerating CoT traces for {len(all_problems):,} problems × 3 traces")
+    print(f"  Remaining tasks     : {len(todo):,}")
     print(f"  Estimated API calls : {est_api_calls:,}")
     print(f"  Estimated examples  : {est_examples:,}")
     print(f"  Estimated output    : ~{est_mb:.0f} MB")
+    print(f"  Workers             : {MAX_WORKERS}")
     if example_cap:
         print(f"  Example cap         : {example_cap:,}")
     if byte_limit:
@@ -372,49 +373,61 @@ def main():
     print(f"  Output              : {args.output}")
     print(f"  Checkpoint          : {checkpoint_path}\n")
 
+    def _process_trace(task):
+        idx, trace_num, sys_p, user_msg, problem = task
+        response = call_api(client, sys_p, user_msg)
+        if is_valid_response(response):
+            return idx, trace_num, build_example(problem, response)
+        return idx, trace_num, None
+
+    # Track how many traces have completed per problem (to update checkpoint)
+    traces_done = {}   # problem_idx -> count of completed traces
+
     with open(args.output, "a" if args.resume else "w", encoding="utf-8") as out_f:
-        for idx, problem in enumerate(tqdm(all_problems, desc="Problems")):
+        with ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
+            futures = {executor.submit(_process_trace, task): task for task in todo}
+            pbar = tqdm(total=len(todo), desc="CoT traces")
+            try:
+                for future in as_completed(futures):
+                    idx, trace_num, example = future.result()
 
-            if idx in completed_indices:
-                continue
+                    if example:
+                        line = json.dumps(example, ensure_ascii=False) + "\n"
+                        out_f.write(line)
+                        total_generated += 1
+                        bytes_written   += len(line.encode("utf-8"))
+                    else:
+                        total_discarded += 1
 
-            # Size limit checks
-            if example_cap and total_generated >= example_cap:
-                tqdm.write(f"\nExample cap reached: {total_generated:,} examples. Stopping.")
-                break
-            if byte_limit and bytes_written >= byte_limit:
-                tqdm.write(f"\nSize cap reached: {bytes_written / 1e6:.1f} MB written. Stopping.")
-                break
+                    # Mark problem complete when all 3 traces finish
+                    traces_done[idx] = traces_done.get(idx, 0) + 1
+                    if traces_done[idx] == 3:
+                        completed_indices.add(idx)
 
-            use_journey = journey_flags[idx]
-            prompts     = build_prompts(problem, use_journey)
+                    pbar.update(1)
 
-            for trace_num, (system_prompt, user_msg) in enumerate(prompts, start=1):
-                if example_cap and total_generated >= example_cap:
-                    break
-                response = call_api(client, system_prompt, user_msg)
+                    if len(completed_indices) % CHECKPOINT_EVERY == 0:
+                        save_checkpoint(checkpoint_path, completed_indices)
+                        out_f.flush()
+                        tqdm.write(
+                            f"  Checkpoint | problems: {len(completed_indices):,} | "
+                            f"generated: {total_generated:,} | "
+                            f"size: {bytes_written / 1e6:.1f} MB"
+                        )
 
-                if is_valid_response(response):
-                    example  = build_example(problem, response)
-                    line     = json.dumps(example, ensure_ascii=False) + "\n"
-                    out_f.write(line)
-                    total_generated += 1
-                    bytes_written   += len(line.encode("utf-8"))
-                else:
-                    total_discarded += 1
-
-            completed_indices.add(idx)
-
-            # Save checkpoint periodically
-            if len(completed_indices) % CHECKPOINT_EVERY == 0:
-                save_checkpoint(checkpoint_path, completed_indices)
-                out_f.flush()
-                tqdm.write(
-                    f"  Checkpoint saved | "
-                    f"Generated: {total_generated:,} | "
-                    f"Size: {bytes_written / 1e6:.1f} MB | "
-                    f"Discarded: {total_discarded:,}"
-                )
+                    # Size / count limits
+                    if example_cap and total_generated >= example_cap:
+                        tqdm.write(f"\nExample cap reached: {total_generated:,}. Stopping.")
+                        for f in futures:
+                            f.cancel()
+                        break
+                    if byte_limit and bytes_written >= byte_limit:
+                        tqdm.write(f"\nSize cap reached: {bytes_written / 1e6:.1f} MB. Stopping.")
+                        for f in futures:
+                            f.cancel()
+                        break
+            finally:
+                pbar.close()
 
     # Final checkpoint
     save_checkpoint(checkpoint_path, completed_indices)

@@ -284,63 +284,91 @@ python prepare_finance_sft.py \
 #   /workspace/data/sft/chat_finance_alpaca.jsonl  (~68K rows)
 ```
 
-### Step 5.3 — Generate finance CoT data (75K examples)
+### Step 5.3 — Download finance CoT data from HuggingFace
 
-**Why:** 75K GPT-4o mini reasoning traces on FinQA/ConvFinQA problems teach the model
-to show its working with <think> tags. Quality CoT data is the single biggest driver
-of financial reasoning capability at 250M scale.
-TAT-QA and ibm/convfinqa were removed (gated/private) — replaced with
-`ibm-research/finqa` and `TheFinAI/flare-convfinqa` (both public).
+**Why:** 2,322 GPT-4o mini reasoning traces on ConvFinQA problems teach the model
+to show its working with <think> tags.
+Pre-generated and stored on HuggingFace — no API cost to re-run.
+
+> **Note:** ibm-research/finqa was removed (HuggingFace deprecated dataset loading
+> scripts in 2025). CoT data comes from TheFinAI/flare-convfinqa only.
+> MAX_WORKERS reduced to 8 to avoid TPM rate limits (200K TPM on gpt-4o-mini).
 
 ```bash
-# Test with 50 problems first (~$0.15)
-python generate_finance_cot.py --max-problems 50
+huggingface-cli download chaitanyaapex98/nanogpt-sft-finance-cot \
+  --repo-type dataset \
+  --local-dir /workspace/data/sft/
 
-# Full run (~75K examples, ~$30)
-python generate_finance_cot.py
-
-# Resume if interrupted
-python generate_finance_cot.py --resume
-
-# Output: /workspace/data/sft/chat_finance_cot.jsonl
-# Duration: ~3 hours | Cost: ~$30
+mv /workspace/data/sft/chat_finance_cot.jsonl /workspace/data/sft/chat_finance_cot.jsonl
+# Output: /workspace/data/sft/chat_finance_cot.jsonl  (2,322 examples)
 ```
 
-### Step 5.4 — Generate finance Python code examples (7.5K examples)
-
-**Why:** Code SFT teaches the model to generate complete, working Python functions
-for financial calculations (Sharpe ratio, CAGR, portfolio analytics) rather than
-just describing what to do.
-
+To regenerate from scratch (optional, ~$10, ~1.5 hours):
 ```bash
-# Test with 20 examples first
-python generate_finance_code.py --max-examples 20
-
-# Full run (~7.5K examples, ~$5)
-python generate_finance_code.py
+python generate_finance_cot.py \
+  --output /workspace/data/sft/chat_finance_cot.jsonl \
+  --datasets convfinqa
 
 # Resume if interrupted
-python generate_finance_code.py --resume
+python generate_finance_cot.py \
+  --output /workspace/data/sft/chat_finance_cot.jsonl \
+  --datasets convfinqa --resume
+```
 
-# Output: /workspace/data/sft/chat_finance_code.jsonl
-# Duration: ~30 min | Cost: ~$5
+### Step 5.4 — Download finance Python code data from HuggingFace
+
+**Why:** 1,629 instruction-response pairs across 10 core finance topics (Sharpe,
+drawdown, CAGR, VaR, Black-Scholes, portfolio optimisation, etc.) across 9 task
+types teach the model to write complete, working Python functions.
+Pre-generated — no API cost to re-run.
+
+> **Note:** Topics restructured from 83 shallow topics (3 variants each) to
+> 10 deep topics (9 task types × 12 templates). ThreadPoolExecutor with
+> MAX_WORKERS=10 added for parallel generation.
+
+```bash
+huggingface-cli download chaitanyaapex98/nanogpt-sft-finance-code \
+  --repo-type dataset \
+  --local-dir /workspace/data/sft/
+
+# Output: /workspace/data/sft/chat_finance_code.jsonl  (1,629 examples)
 ```
 
 ### Step 5.5 — Combine all SFT data
 
-**Why:** All sources must be merged into one file for sft_train.py.
-The combined file gives: ~21% CoT reasoning, ~20% Finance-Alpaca,
-~2% code, ~57% SmolTalk general conversation.
+**Why:** All sources merged into one file for sft_train.py.
+Finance CoT (×3) and code (×4) are upweighted to balance the data mix —
+each is a small dataset relative to SmolTalk, so repetition reinforces the pattern.
 
 ```bash
-cat /workspace/data/sft/chat_finance_cot.jsonl \
-    /workspace/data/sft/chat_finance_code.jsonl \
-    /workspace/data/sft/chat_finance_alpaca.jsonl \
-    /workspace/data/sft/chat_train.jsonl \
+# Download CoT and code from HuggingFace first (Steps 5.3 and 5.4 above)
+# Then generate Finance-Alpaca and SmolTalk fresh (Steps 5.1 and 5.2)
+
+# Intentional repetition = upweighting. CoT and code are small datasets;
+# repeating them gives the model proportionally more exposure to these skills.
+#   chat_finance_cot.jsonl  × 3  (upweighted 3× — 2.3K → 6.9K effective)
+#   chat_finance_code.jsonl × 4  (upweighted 4× — 1.6K → 6.5K effective)
+#   others                  × 1  (no repetition)
+cat \
+  /workspace/data/sft/chat_finance_cot.jsonl \
+  /workspace/data/sft/chat_finance_cot.jsonl \
+  /workspace/data/sft/chat_finance_cot.jsonl \
+  /workspace/data/sft/chat_finance_code.jsonl \
+  /workspace/data/sft/chat_finance_code.jsonl \
+  /workspace/data/sft/chat_finance_code.jsonl \
+  /workspace/data/sft/chat_finance_code.jsonl \
+  /workspace/data/sft/chat_finance_alpaca.jsonl \
+  /workspace/data/sft/chat_train.jsonl \
   > /workspace/data/sft/chat_all_train.jsonl
 
 echo "Total SFT lines: $(wc -l < /workspace/data/sft/chat_all_train.jsonl)"
-# Expected: ~420,000 lines
+# Expected: ~349,000 lines
+
+# Data mix (approximate):
+#   SmolTalk          267K  × 1  = 267K  (55.9%)  — general instruction following
+#   Finance-Alpaca     68K  × 1  =  68K  (14.2%)  — broad financial Q&A
+#   Finance CoT       2.3K  × 3  = 6.9K  (1.5%)   — numerical reasoning with <think>
+#   Finance Code      1.6K  × 4  = 6.5K  (1.4%)   — Python finance functions
 ```
 
 ---
@@ -424,12 +452,16 @@ python chat_cli.py --model-dir /workspace/sft_checkpoints_v2/ --no-system-prompt
 
 ## Phase 8 — Reinforcement Learning (Optional)
 
-### Step 8.1 — Run REINFORCE RL on FinQA
+### Step 8.1 — Run REINFORCE RL on FinQA / ConvFinQA
 
 **Why:** The RL stage reinforces correct numerical answers through binary rewards —
 no reward model needed, just verify the number matches. Expected gain: +5–8 points
 on FinQA exact match. Statistically noisy at 250M scale — run with 3 seeds and
 report the average. Skip this step to stay under $300 total cost.
+
+> **Note:** `tasks/finqa.py` tries `ibm-research/finqa` first; automatically falls
+> back to `TheFinAI/flare-convfinqa` if the FinQA dataset script is unavailable
+> (HuggingFace deprecated dataset scripts in 2025). No changes to this command needed.
 
 ```bash
 python rl_train.py \

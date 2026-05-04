@@ -299,7 +299,6 @@ huggingface-cli download chaitanyaapex98/nanogpt-sft-finance-cot \
   --repo-type dataset \
   --local-dir /workspace/data/sft/
 
-mv /workspace/data/sft/chat_finance_cot.jsonl /workspace/data/sft/chat_finance_cot.jsonl
 # Output: /workspace/data/sft/chat_finance_cot.jsonl  (2,322 examples)
 ```
 

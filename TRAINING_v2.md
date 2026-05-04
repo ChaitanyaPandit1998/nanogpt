@@ -295,7 +295,7 @@ Pre-generated and stored on HuggingFace — no API cost to re-run.
 > MAX_WORKERS reduced to 8 to avoid TPM rate limits (200K TPM on gpt-4o-mini).
 
 ```bash
-huggingface-cli download chaitanyaapex98/nanogpt-sft-finance-cot \
+hf download chaitanyaapex98/nanogpt-sft-finance-cot \
   --repo-type dataset \
   --local-dir /workspace/data/sft/
 
@@ -326,7 +326,7 @@ Pre-generated — no API cost to re-run.
 > MAX_WORKERS=10 added for parallel generation.
 
 ```bash
-huggingface-cli download chaitanyaapex98/nanogpt-sft-finance-code \
+hf download chaitanyaapex98/nanogpt-sft-finance-code \
   --repo-type dataset \
   --local-dir /workspace/data/sft/
 

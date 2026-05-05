@@ -535,6 +535,77 @@ python eval_finance.py \
 
 ---
 
+## Running Locally
+
+Download the trained model from your RunPod network volume and run it on your
+local machine for inference. No GPU required — runs on Apple Silicon (MPS) or CPU.
+
+### Step L.1 — Add RunPod S3 credentials to .env
+
+**Why:** `download_model.py` uses the RunPod S3-compatible API to pull files
+from your network volume without needing a running pod.
+
+1. Go to RunPod dashboard → **Storage** → click your volume → **Manage** → **API Keys**
+2. Create a new Access Key + Secret Key pair
+3. Add to `.env` in the project root:
+
+```bash
+RUNPOD_S3_ENDPOINT=https://s3api-us-ca-2.runpod.io
+RUNPOD_S3_BUCKET=your-volume-id          # shown on the volume page
+RUNPOD_S3_ACCESS_KEY=your-access-key
+RUNPOD_S3_SECRET_KEY=your-secret-key
+```
+
+### Step L.2 — Install boto3
+
+```bash
+pip install boto3
+```
+
+### Step L.3 — Download model + tokenizer
+
+**Why:** Pulls only the inference files (~500 MB total). The optimizer state
+(~1.5 GB) is skipped by default — not needed for chat.
+
+```bash
+python download_model.py \
+  --remote-checkpoint-dir sft_checkpoints_v2 \
+  --remote-tokenizer-dir  tokenizer_v2 \
+  --local-dir             ./local_model/
+
+# Downloads:
+#   ./local_model/sft_checkpoints_v2/model_044043.pt   (~500 MB)
+#   ./local_model/sft_checkpoints_v2/meta_044043.json  (<1 KB)
+#   ./local_model/tokenizer_v2/tokenizer.pkl            (~few MB)
+#   ./local_model/tokenizer_v2/token_bytes.pt           (~few MB)
+
+# To download a specific step:
+python download_model.py --step 44043 --local-dir ./local_model/
+
+# To also download optimizer state (needed to resume training):
+python download_model.py --include-optimizer --local-dir ./local_model/
+```
+
+### Step L.4 — Run chat CLI locally
+
+```bash
+python chat_cli.py \
+  --model-dir     ./local_model/sft_checkpoints_v2/ \
+  --tokenizer-dir ./local_model/tokenizer_v2/
+
+# Device: auto-detects MPS (Apple Silicon) or CPU
+# Memory: ~1 GB RAM for the 250M param model
+# Speed:  ~5–10 tokens/sec on Apple M-series chip
+
+# One-shot prompt (non-interactive):
+python chat_cli.py \
+  --model-dir     ./local_model/sft_checkpoints_v2/ \
+  --tokenizer-dir ./local_model/tokenizer_v2/ \
+  --prompt "What is the Sharpe ratio and how is it calculated?"
+```
+
+---
+
 ## Resume guide
 
 Every stage supports interruption and resumption:

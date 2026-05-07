@@ -13,18 +13,35 @@ Credentials are read from .env in the project root:
   RUNPOD_S3_ACCESS_KEY your RunPod S3 access key
   RUNPOD_S3_SECRET_KEY your RunPod S3 secret key
 
+Storage pods and their paths
+  ~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+  Pod A — SFT v2  (bucket: yrbaykik4y, endpoint: s3api-us-ca-2.runpod.io)
+    Checkpoint dir : sft_checkpoints_v2      (latest step: 044043, ~1.27 GB/ckpt)
+    Tokenizer dir  : tokenizer_v2
+    Command:
+      python download_model.py \\
+        --remote-checkpoint-dir sft_checkpoints_v2 \\
+        --remote-tokenizer-dir  tokenizer_v2 \\
+        --local-dir             ./local_model
+
+  Pod B — SFT v1  (bucket: v1cd8j9p73, endpoint: s3api-us-mo-1.runpod.io)
+    Checkpoint dir : nanogpt/sft_checkpoints  (latest step: 046831, ~0.67 GB/ckpt)
+    Tokenizer dir  : nanogpt/tokenizer
+    Command:
+      python download_model.py \\
+        --remote-checkpoint-dir nanogpt/sft_checkpoints \\
+        --remote-tokenizer-dir  nanogpt/tokenizer \\
+        --local-dir             ./local_model
+
+  Update RUNPOD_S3_ENDPOINT and RUNPOD_S3_BUCKET in .env to switch between pods.
+  The access key and secret key are shared across both pods.
+
 Usage:
   # Download latest SFT checkpoint + tokenizer
   python download_model.py
 
   # Download a specific step
   python download_model.py --step 44043
-
-  # Custom paths
-  python download_model.py \\
-    --remote-checkpoint-dir sft_checkpoints_v2 \\
-    --remote-tokenizer-dir  tokenizer_v2 \\
-    --local-dir             ./local_model/
 
   # Also download optimizer state (needed to resume training, not for inference)
   python download_model.py --include-optimizer
@@ -60,6 +77,12 @@ def parse_args():
     return p.parse_args()
 
 
+def _region_from_endpoint(endpoint: str) -> str:
+    """Extract region from a RunPod S3 endpoint like https://s3api-us-ca-2.runpod.io."""
+    m = re.search(r"s3api-([a-z0-9-]+)\.runpod\.io", endpoint)
+    return m.group(1) if m else "us-east-1"
+
+
 def make_client(endpoint: str, access_key: str, secret_key: str):
     try:
         import boto3
@@ -73,27 +96,46 @@ def make_client(endpoint: str, access_key: str, secret_key: str):
         endpoint_url=endpoint,
         aws_access_key_id=access_key,
         aws_secret_access_key=secret_key,
-        region_name="us-east-1",
-        config=Config(signature_version="s3v4"),
+        region_name=_region_from_endpoint(endpoint),
+        config=Config(
+            signature_version="s3v4",
+            connect_timeout=10,
+            read_timeout=30,
+            retries={"max_attempts": 2},
+        ),
     )
 
 
 def list_objects(client, bucket: str, prefix: str) -> list[dict]:
+    """List all objects under prefix.
+
+    RunPod's S3 API has a pagination bug where Prefix+ContinuationToken listings
+    return empty pages with tokens scoped to unrelated parts of the bucket.
+    Using Delimiter="/" scopes the listing correctly and avoids the bug.
+    """
     objects = []
-    paginator = client.get_paginator("list_objects_v2")
-    for page in paginator.paginate(Bucket=bucket, Prefix=prefix):
+    kwargs: dict = {"Bucket": bucket, "Prefix": prefix, "Delimiter": "/"}
+    while True:
+        page = client.list_objects_v2(**kwargs)
         objects.extend(page.get("Contents", []))
+        if not page.get("IsTruncated"):
+            break
+        token = page.get("NextContinuationToken")
+        if not token:
+            break
+        kwargs["ContinuationToken"] = token
     return objects
 
 
-def find_latest_step(objects: list[dict]) -> int | None:
+def find_latest_step(objects: list[dict]) -> str | None:
+    """Return the zero-padded step string of the latest checkpoint (e.g. '044043')."""
     steps = []
     for obj in objects:
         key = obj["Key"]
         m = re.search(r"model_(\d+)\.pt$", key)
         if m:
-            steps.append(int(m.group(1)))
-    return max(steps) if steps else None
+            steps.append(m.group(1))
+    return max(steps, key=lambda s: int(s)) if steps else None
 
 
 def format_size(n_bytes: int) -> str:
@@ -160,18 +202,18 @@ def main():
         print(f"No objects found at {bucket}/{ckpt_prefix}")
         sys.exit(1)
 
-    step = args.step or find_latest_step(ckpt_objects)
-    if step is None:
+    step_str = f"{args.step:06d}" if args.step else find_latest_step(ckpt_objects)
+    if step_str is None:
         print("Could not find any model_*.pt file in the checkpoint directory.")
         sys.exit(1)
 
-    print(f"Checkpoint step: {step:,}")
+    print(f"Checkpoint step: {int(step_str):,}")
 
-    wanted_suffixes = {f"model_{step}.pt", f"meta_{step}.json"}
+    wanted_suffixes = {f"model_{step_str}.pt", f"meta_{step_str}.json"}
     if args.include_optimizer:
-        wanted_suffixes.add(f"optim_{step}_rank0.pt")
+        wanted_suffixes.add(f"optim_{step_str}_rank0.pt")
 
-    print(f"\nDownloading checkpoint files (step {step}):")
+    print(f"\nDownloading checkpoint files (step {step_str}):")
     downloaded = 0
     for obj in ckpt_objects:
         key  = obj["Key"]
@@ -182,7 +224,7 @@ def main():
             downloaded += 1
 
     if downloaded == 0:
-        print(f"No checkpoint files found for step {step}.")
+        print(f"No checkpoint files found for step {step_str}.")
         sys.exit(1)
 
     # -------------------------------------------------------------------------

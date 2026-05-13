@@ -1,0 +1,37 @@
+{
+  "timestamp": "2026-05-14T03:02:32",
+  "model_dir": "./local_model/nanogpt/sft_checkpoints/",
+  "tokenizer_dir": "./local_model/nanogpt/tokenizer",
+  "step": 46831,
+  "device": "mps",
+  "split": "val",
+  "num_total": 10042,
+  "num_correct": 2847,
+  "num_correct_norm": 2967,
+  "acc": 0.2835,
+  "acc_norm": 0.2955,
+  "macro_f1": 0.2954,
+  "per_class": {
+    "0": {
+      "precision": 0.2968,
+      "recall": 0.2915,
+      "f1": 0.2941
+    },
+    "1": {
+      "precision": 0.2938,
+      "recall": 0.295,
+      "f1": 0.2944
+    },
+    "2": {
+      "precision": 0.3024,
+      "recall": 0.3015,
+      "f1": 0.3019
+    },
+    "3": {
+      "precision": 0.2887,
+      "recall": 0.2937,
+      "f1": 0.2912
+    }
+  },
+  "elapsed_seconds": 1380.5
+}

@@ -47,6 +47,8 @@ Usage:
   python download_model.py --include-optimizer
 """
 
+from __future__ import annotations
+
 import argparse
 import os
 import sys
